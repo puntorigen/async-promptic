@@ -2,11 +2,11 @@
 
 [![Python Versions](https://img.shields.io/pypi/pyversions/async-promptic)](https://pypi.org/project/async-promptic)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://github.com/puntorigen/async-promptic/actions/workflows/tests.yml/badge.svg)](https://github.com/puntorigen/async-promptic/actions/workflows/tests.yml)
+[![Tests](https://github.com/puntorigen/promptic/actions/workflows/tests.yml/badge.svg)](https://github.com/puntorigen/promptic/actions/workflows/tests.yml)
 
 ### 90% of what you need for LLM app development. Nothing you don't.
 
-Async-Promptic is a fork of [Promptic](https://github.com/puntorigen/async-promptic) that adds full async support. It aims to be the "[requests](https://requests.readthedocs.io/en/latest/)" of LLM development -- the most productive and pythonic way to build LLM applications. It leverages [LiteLLM][litellm], so you're never locked in to an LLM provider and can switch to the latest and greatest with a single line of code. Async-Promptic gets out of your way so you can focus entirely on building features.
+Async-Promptic is a fork of [Promptic](https://github.com/puntorigen/promptic) that adds full async support. It aims to be the "[requests](https://requests.readthedocs.io/en/latest/)" of LLM development -- the most productive and pythonic way to build LLM applications. It leverages [LiteLLM][litellm], so you're never locked in to an LLM provider and can switch to the latest and greatest with a single line of code. Async-Promptic gets out of your way so you can focus entirely on building features.
 
 > "Perfection is attained, not when there is nothing more to add, but when there is nothing more to take away."
 
