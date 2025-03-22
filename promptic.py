@@ -501,6 +501,8 @@ class Promptic:
 
         # Check if the function is async
         is_async = inspect.iscoroutinefunction(func)
+        # Check if the function is a method of a class
+        is_method = inspect.ismethod(func) or (hasattr(func, "__qualname__") and "." in func.__qualname__)
 
         if is_async:
             @wraps(func)
@@ -538,7 +540,16 @@ class Promptic:
 
                 # Get the argument names, default values and values using inspect
                 sig = inspect.signature(func)
-                arg_names = sig.parameters.keys()
+                arg_names = list(sig.parameters.keys())
+                
+                # Handle 'self' parameter for class methods
+                instance = None
+                if is_method and args and len(args) > 0:
+                    instance = args[0]  # The first argument is 'self' for instance methods
+                    args = args[1:]  # Remove 'self' from args for later processing
+                    if arg_names and arg_names[0] == 'self':
+                        arg_names = arg_names[1:]  # Remove 'self' from arg_names
+                
                 arg_values = {
                     name: (
                         sig.parameters[name].default
@@ -741,6 +752,13 @@ class Promptic:
                                 if call and self.weave_client:
                                     self.weave_client.finish_call(call, output=result)
 
+                                # For class methods, if the original function is also decorated to process LLM results,
+                                # we need to call it with the instance and the result
+                                if is_method and instance is not None:
+                                    # Add logging to debug class method invocation
+                                    self.logger.debug(f"Calling class method {func.__name__} with instance: {instance}")
+                                    return await func(instance, result)
+                                
                                 return result
 
             # Add methods explicitly
@@ -791,7 +809,16 @@ class Promptic:
 
                 # Get the argument names, default values and values using inspect
                 sig = inspect.signature(func)
-                arg_names = sig.parameters.keys()
+                arg_names = list(sig.parameters.keys())
+                
+                # Handle 'self' parameter for class methods
+                instance = None
+                if is_method and args and len(args) > 0:
+                    instance = args[0]  # The first argument is 'self' for instance methods
+                    args = args[1:]  # Remove 'self' from args for later processing
+                    if arg_names and arg_names[0] == 'self':
+                        arg_names = arg_names[1:]  # Remove 'self' from arg_names
+                
                 arg_values = {
                     name: (
                         sig.parameters[name].default
@@ -995,7 +1022,14 @@ class Promptic:
 
                                 if call and self.weave_client:
                                     self.weave_client.finish_call(call, output=result)
-
+                                
+                                # For class methods, if the original function is also decorated to process LLM results,
+                                # we need to call it with the instance and the result
+                                if is_method and instance is not None:
+                                    # Add logging to debug class method invocation
+                                    self.logger.debug(f"Calling class method {func.__name__} with instance: {instance}")
+                                    return func(instance, result)
+                                
                                 return result
 
             # Add methods explicitly
@@ -1070,13 +1104,13 @@ class Promptic:
                                                 function_args = self._deserialize_pydantic_args(
                                                     fn, function_args
                                                 )
-                                                # Cannot handle async tools in streaming mode for non-async contexts
+                                                # Handle both async and sync tools
                                                 if inspect.iscoroutinefunction(fn):
-                                                    self.logger.warning(
-                                                        f"Async tool {tool_info['name']} cannot be called in streaming mode from sync context"
+                                                    raise ValueError(
+                                                        f"Cannot call async tool function {tool_info['name']} from sync context. "
+                                                        f"Either make the decorated function async or make the tool function sync."
                                                     )
-                                                else:
-                                                    fn(**function_args)
+                                                function_response = fn(**function_args)
                                             except Exception as e:
                                                 self.logger.error(
                                                     f"Error calling tool {tool_info['name']}({function_args}): {e}"
