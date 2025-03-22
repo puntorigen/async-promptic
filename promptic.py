@@ -757,7 +757,16 @@ class Promptic:
                                 if is_method and instance is not None:
                                     # Add logging to debug class method invocation
                                     self.logger.debug(f"Calling class method {func.__name__} with instance: {instance}")
-                                    return await func(instance, result)
+                                    
+                                    # Check if the function has a 'result' parameter
+                                    sig = inspect.signature(func)
+                                    updated_args = arg_values.copy()
+                                    
+                                    # Only add result parameter if it exists in the function signature
+                                    if '_result' in sig.parameters:
+                                        updated_args['_result'] = result
+                                    
+                                    return await func(instance, **updated_args)
                                 
                                 return result
 
@@ -1028,7 +1037,16 @@ class Promptic:
                                 if is_method and instance is not None:
                                     # Add logging to debug class method invocation
                                     self.logger.debug(f"Calling class method {func.__name__} with instance: {instance}")
-                                    return func(instance, result)
+                                    
+                                    # Check if the function has a 'result' parameter
+                                    sig = inspect.signature(func)
+                                    updated_args = arg_values.copy()
+                                    
+                                    # Only add result parameter if it exists in the function signature
+                                    if '_result' in sig.parameters:
+                                        updated_args['_result'] = result
+                                    
+                                    return func(instance, **updated_args)
                                 
                                 return result
 
