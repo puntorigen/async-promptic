@@ -17,7 +17,7 @@ classifiers = [
 description = "90% of what you need for LLM app development. Nothing you don't."
 license = {file = "LICENSE"}
 name = "async-promptic"
-version = "5.4.0"
+version = "5.4.1"
 dependencies = [
   "jsonschema>=4.23.0",
   "litellm~=1.38",
