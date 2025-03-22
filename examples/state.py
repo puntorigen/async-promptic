@@ -1,5 +1,5 @@
 import json
-from promptic import State, llm
+from async_promptic import State, llm
 
 
 class RedisState(State):

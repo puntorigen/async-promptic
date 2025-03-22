@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from promptic import llm
+from async_promptic import llm
 
 
 @llm(model="gpt-4o")

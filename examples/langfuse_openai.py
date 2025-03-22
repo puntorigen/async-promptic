@@ -1,6 +1,6 @@
 from langfuse.openai import openai
 from langfuse.decorators import observe
-from promptic import Promptic
+from async_promptic import Promptic
 
 
 promptic = Promptic(openai_client=openai.OpenAI())

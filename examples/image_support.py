@@ -1,4 +1,4 @@
-from promptic import llm, ImageBytes
+from async_promptic import llm, ImageBytes
 
 
 @llm(model="gpt-4o")  # Use a vision-capable model

@@ -1,5 +1,5 @@
 from tenacity import retry, wait_exponential, retry_if_exception_type
-from promptic import llm
+from async_promptic import llm
 from litellm.exceptions import RateLimitError
 
 

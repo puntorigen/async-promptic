@@ -16,7 +16,7 @@ from tenacity import (
     retry_if_exception_type,
 )
 
-from promptic import ImageBytes, Promptic, State, llm, litellm_completion
+from async_promptic import ImageBytes, Promptic, State, llm, litellm_completion
 from openai import OpenAI
 
 ERRORS = (RateLimitError, InternalServerError, APIError, Timeout)

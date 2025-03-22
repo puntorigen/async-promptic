@@ -1,5 +1,5 @@
 import asyncio
-from promptic import llm, Promptic
+from async_promptic import llm, Promptic
 
 # Create a Promptic instance with our desired settings
 promptic = Promptic(model="gpt-3.5-turbo")

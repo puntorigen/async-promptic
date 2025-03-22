@@ -1,4 +1,4 @@
-from promptic import Promptic
+from async_promptic import Promptic
 import weave
 
 # Initialize the weave client with the project name

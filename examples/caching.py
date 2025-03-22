@@ -1,4 +1,4 @@
-from promptic import llm
+from async_promptic import llm
 
 # imagine these are long legal documents
 legal_document, another_legal_document = (

@@ -34,7 +34,7 @@ Functions decorated with `@llm` use its docstring as a prompt template. When the
 ```py
 # examples/basic.py
 
-from promptic import llm
+from async_promptic import llm
 
 
 @llm
@@ -71,7 +71,7 @@ Async-Promptic supports using the `@llm` decorator on class methods, allowing yo
 ```py
 # examples/class_method_example.py
 
-from promptic import llm
+from async_promptic import llm
 
 class LanguageAssistant:
     """A class that demonstrates using @llm decorator with class methods"""
@@ -155,7 +155,7 @@ Async-Promptic fully supports async/await syntax, making it ideal for modern Pyt
 # examples/async_example.py
 
 import asyncio
-from promptic import llm
+from async_promptic import llm
 
 # Decorate our async function with the llm decorator
 @llm
@@ -211,7 +211,7 @@ Promptic supports image inputs through the `ImageBytes` type. By defining an arg
 ```py
 # examples/image_support.py
 
-from promptic import llm, ImageBytes
+from async_promptic import llm, ImageBytes
 
 
 @llm(model="gpt-4o")  # Use a vision-capable model
@@ -244,7 +244,7 @@ You can use Pydantic models to ensure the LLM returns data in exactly the struct
 # examples/structured.py
 
 from pydantic import BaseModel
-from promptic import llm
+from async_promptic import llm
 
 
 class Forecast(BaseModel):
@@ -268,7 +268,7 @@ Alternatively, you can use JSON Schema dictionaries for more low-level validatio
 ```py
 # examples/json_schema.py
 
-from promptic import llm
+from async_promptic import llm
 
 schema = {
     "type": "object",
@@ -306,7 +306,7 @@ Functions decorated with `@llm.tool` become tools that the LLM can invoke to per
 
 from datetime import datetime
 
-from promptic import llm
+from async_promptic import llm
 
 
 @llm(model="gpt-4o")
@@ -356,7 +356,7 @@ The streaming feature allows real-time response generation, useful for long-form
 ```py
 # examples/streaming.py
 
-from promptic import llm
+from async_promptic import llm
 
 
 @llm(stream=True)
@@ -382,7 +382,7 @@ Here's an example on how to use the [langfuse](https://langfuse.com/) OpenAI cli
 
 from langfuse.openai import openai
 from langfuse.decorators import observe
-from promptic import Promptic
+from async_promptic import Promptic
 
 
 promptic = Promptic(openai_client=openai.OpenAI())
@@ -408,7 +408,7 @@ Promptic integrates with [Weave](https://wandb.ai) to trace function calls and L
 ```py
 # examples/weave_integration.py
 
-from promptic import Promptic
+from async_promptic import Promptic
 import weave
 
 # Initialize the weave client with the project name
@@ -449,7 +449,7 @@ Dry runs allow you to see which tools will be called and their arguments without
 ```py
 # examples/error_handing.py
 
-from promptic import llm
+from async_promptic import llm
 
 
 @llm(
@@ -489,7 +489,7 @@ print(jarvis("Please turn the light on and check the weather in San Francisco"))
 # examples/resiliency.py
 
 from tenacity import retry, wait_exponential, retry_if_exception_type
-from promptic import llm
+from async_promptic import llm
 from litellm.exceptions import RateLimitError
 
 
@@ -514,7 +514,7 @@ By default, each function call is independent and stateless. Setting `memory=Tru
 # examples/memory.py
 
 import gradio as gr
-from promptic import llm
+from async_promptic import llm
 
 
 @llm(memory=True, stream=True)
@@ -543,7 +543,7 @@ Note, calling a decorated function will always execute the prompt template. For 
 ```py
 # examples/direct_messaging.py
 
-from promptic import llm
+from async_promptic import llm
 
 
 @llm(
@@ -584,7 +584,7 @@ For custom storage solutions, you can extend the `State` class to implement pers
 # examples/state.py
 
 import json
-from promptic import State, llm
+from async_promptic import State, llm
 
 
 class RedisState(State):
@@ -617,7 +617,7 @@ For Anthropic models (Claude), promptic provides intelligent caching control to 
 ```py
 # examples/caching.py
 
-from promptic import llm
+from async_promptic import llm
 
 # imagine these are long legal documents
 legal_document, another_legal_document = (
@@ -664,7 +664,7 @@ Authentication can be handled in three ways:
 1. Directly via the `api_key` parameter:
 
 ```py
-from promptic import llm
+from async_promptic import llm
 
 @llm(model="gpt-4o-mini", api_key="your-api-key-here")
 def my_function(text):
@@ -761,7 +761,7 @@ The main class for creating LLM-powered functions and managing conversations.
 - `completion(messages: list[dict], **kwargs)`: Send a list of messages directly to the LLM and get the raw completion response. Useful for more control over the conversation flow.
 
   ```python
-  from promptic import Promptic
+  from async_promptic import Promptic
 
   p = Promptic(model="gpt-4o-mini")
   messages = [
@@ -782,7 +782,7 @@ The main class for creating LLM-powered functions and managing conversations.
 # examples/api_ref.py
 
 from pydantic import BaseModel
-from promptic import llm
+from async_promptic import llm
 
 
 class Story(BaseModel):

@@ -1,5 +1,5 @@
 import gradio as gr
-from promptic import llm
+from async_promptic import llm
 
 
 @llm(memory=True, stream=True)

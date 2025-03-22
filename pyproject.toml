@@ -17,7 +17,7 @@ classifiers = [
 description = "90% of what you need for LLM app development. Nothing you don't."
 license = {file = "LICENSE"}
 name = "async-promptic"
-version = "5.4.1"
+version = "5.4.2"
 dependencies = [
   "jsonschema>=4.23.0",
   "litellm~=1.38",
@@ -28,9 +28,6 @@ requires-python = ">=3.11"
 
 [project.urls]
 Home = "https://github.com/puntorigen/promptic"
-
-[tool.flit.module]
-name = "promptic"
 
 [tool.uv]
 dev-dependencies = [

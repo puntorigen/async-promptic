@@ -1,4 +1,4 @@
-from promptic import llm
+from async_promptic import llm
 
 
 @llm

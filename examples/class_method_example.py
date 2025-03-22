@@ -1,5 +1,5 @@
 import asyncio
-from promptic import llm, Promptic
+from async_promptic import llm, Promptic
 
 # Example of standalone function that uses the decorator (existing approach)
 @llm(model="gpt-3.5-turbo")
