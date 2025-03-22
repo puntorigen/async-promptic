@@ -1,12 +1,12 @@
-# promptic
+# async-promptic
 
-[![Python Versions](https://img.shields.io/pypi/pyversions/promptic)](https://pypi.org/project/promptic)
+[![Python Versions](https://img.shields.io/pypi/pyversions/async-promptic)](https://pypi.org/project/async-promptic)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Tests](https://github.com/knowsuchagency/promptic/actions/workflows/tests.yml/badge.svg)](https://github.com/knowsuchagency/promptic/actions/workflows/tests.yml)
+[![Tests](https://github.com/puntorigen/async-promptic/actions/workflows/tests.yml/badge.svg)](https://github.com/puntorigen/async-promptic/actions/workflows/tests.yml)
 
 ### 90% of what you need for LLM app development. Nothing you don't.
 
-Promptic aims to be the "[requests](https://requests.readthedocs.io/en/latest/)" of LLM development -- the most productive and pythonic way to build LLM applications. It leverages [LiteLLM][litellm], so you're never locked in to an LLM provider and can switch to the latest and greatest with a single line of code. Promptic gets out of your way so you can focus entirely on building features.
+Async-Promptic is a fork of [Promptic](https://github.com/puntorigen/async-promptic) that adds full async support. It aims to be the "[requests](https://requests.readthedocs.io/en/latest/)" of LLM development -- the most productive and pythonic way to build LLM applications. It leverages [LiteLLM][litellm], so you're never locked in to an LLM provider and can switch to the latest and greatest with a single line of code. Async-Promptic gets out of your way so you can focus entirely on building features.
 
 > "Perfection is attained, not when there is nothing more to add, but when there is nothing more to take away."
 
@@ -17,11 +17,12 @@ Promptic aims to be the "[requests](https://requests.readthedocs.io/en/latest/)"
 - 🔄 Streaming support for real-time responses
 - 📚 Automatic prompt caching for supported models
 - 💾 Built-in conversation memory
+- ⚡ **Full async/await support for modern Python applications**
 
 ## Installation
 
 ```bash
-pip install promptic
+pip install async-promptic
 ```
 
 ## Usage
@@ -61,6 +62,63 @@ print(analyze_sentiment("The product was okay but shipping took forever"))
 # Key points:
 # - Neutral product satisfaction
 # - Significant dissatisfaction with shipping time
+```
+
+### Async Support
+
+Async-Promptic fully supports async/await syntax, making it ideal for modern Python applications using frameworks like FastAPI or asynchronous libraries.
+
+```py
+# examples/async_example.py
+
+import asyncio
+from promptic import llm
+
+# Decorate our async function with the llm decorator
+@llm
+async def travel_assistant(destination):
+    """
+    You are a travel assistant. 
+    Provide a brief travel recommendation for {destination}.
+    Use the fetch_weather tool to check the weather there.
+    """
+
+# Register an async tool with the decorated function
+@travel_assistant.tool
+async def fetch_weather(city):
+    """
+    Simulates fetching weather data asynchronously
+    """
+    print(f"Fetching weather for {city}...")
+    await asyncio.sleep(1)  # Simulate API call
+    return f"Sunny and 75°F in {city}"
+
+# Example of an async function with streaming
+@llm(stream=True)
+async def stream_story(topic):
+    """
+    Write a very short story about {topic}.
+    """
+
+async def main():
+    # Call the async function
+    result = await travel_assistant("Tokyo")
+    print("Travel Assistant Result:")
+    print(result)
+    
+    # Test the streaming function
+    print("Streaming Story about space exploration:")
+    generator = await stream_story("space exploration")
+    
+    # Process the streaming response
+    story = ""
+    for chunk in generator:
+        print(chunk, end="", flush=True)
+        story += chunk
+    print("\n")
+
+if __name__ == "__main__":
+    asyncio.run(main())
 ```
 
 ### Image Support
@@ -455,7 +513,7 @@ class RedisState(State):
     def add_message(self, message):
         self.redis.rpush(self.key, json.dumps(message))
 
-    def get_messages(self, limit=None):
+    def get_messages(self, prompt: str = None, limit: int = None):
         messages = self.redis.lrange(self.key, 0, -1)
         return [json.loads(m) for m in messages][-limit:] if limit else messages
 

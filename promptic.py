@@ -11,10 +11,12 @@ import re
 from functools import wraps
 from textwrap import dedent
 from typing import Any, Callable, Dict, List, Optional, Union
+import asyncio
 
 import litellm
 from jsonschema import validate as validate_json_schema
 from litellm import completion as litellm_completion
+from litellm import acompletion as litellm_acompletion
 from pydantic import BaseModel
 
 __version__ = "5.4.0"
@@ -190,6 +192,47 @@ class Promptic:
 
         return completion_messages, completion
 
+    async def _async_completion(self, messages: list[dict], **kwargs):
+        """Async version of _completion for use with async functions."""
+        new_messages = self._set_anthropic_cache(messages)
+        previous_messages = self.state.get_messages() if self.state else []
+
+        completion_messages = self.system_messages + previous_messages + new_messages
+
+        cached_count = 0
+
+        for msg in completion_messages:
+            if hasattr(msg, "get") and msg.get("cache_control"):
+                if cached_count == self.anthropic_cached_block_limit:
+                    msg.pop("cache_control")
+                else:
+                    cached_count += 1
+
+        # Check if create_completion_fn is an async function
+        if inspect.iscoroutinefunction(self.create_completion_fn):
+            completion = await self.create_completion_fn(
+                model=self.model,
+                messages=completion_messages,
+                tools=self.tool_definitions,
+                tool_choice="auto" if self.tool_definitions else None,
+                **(self.completion_kwargs | kwargs),
+            )
+        else:
+            # For async contexts, use litellm's acompletion function
+            completion = await litellm_acompletion(
+                model=self.model,
+                messages=completion_messages,
+                tools=self.tool_definitions,
+                tool_choice="auto" if self.tool_definitions else None,
+                **(self.completion_kwargs | kwargs),
+            )
+
+        if self.state:
+            for msg in new_messages:
+                self.state.add_message(msg)
+
+        return completion_messages, completion
+
     def completion(self, messages: list[dict], **kwargs):
         """Return the raw completion response from the LLM for a list of messages.
 
@@ -216,6 +259,15 @@ class Promptic:
             )
         return self._completion(messages, **kwargs)[1]
 
+    async def async_completion(self, messages: list[dict], **kwargs):
+        """Async version of completion for use with async functions."""
+        if self.state:
+            warnings.warn(
+                "State is enabled, but completion is being called directly. This can cause unexpected behavior.",
+                UserWarning,
+            )
+        return (await self._async_completion(messages, **kwargs))[1]
+
     def message(self, message: str, **kwargs):
         messages = [{"content": message, "role": "user"}]
         completion_messages, response = self._completion(messages, **kwargs)
@@ -239,6 +291,38 @@ class Promptic:
 
         if (self.completion_kwargs | kwargs).get("stream"):
             return self._stream_response(response, call)
+        else:
+            content = response.choices[0].message.content
+            result = self._parse_and_validate_response(content)
+
+            if call and self.weave_client:
+                self.weave_client.finish_call(call, output=result)
+
+            return result
+
+    async def async_message(self, message: str, **kwargs):
+        messages = [{"content": message, "role": "user"}]
+        completion_messages, response = await self._async_completion(messages, **kwargs)
+
+        call = None
+
+        if self.weave_client:
+            call = self.weave_client.create_call(
+                op="Promptic.message",
+                inputs={
+                    "messages": completion_messages,
+                },
+                attributes={
+                    "model": self.model,
+                    "system": self.system,
+                    "tools": self.tool_definitions,
+                    "tool_choice": "auto" if self.tool_definitions else None,
+                },
+                display_name="promptic_message",
+            )
+
+        if (self.completion_kwargs | kwargs).get("stream"):
+            return await self._async_stream_response(response, call)
         else:
             content = response.choices[0].message.content
             result = self._parse_and_validate_response(content)
@@ -415,150 +499,154 @@ class Promptic:
                 "Cannot use both Pydantic return type hints and json_schema validation together"
             )
 
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            self.logger.debug(f"{self.model = }")
-            self.logger.debug(f"{self.system = }")
-            self.logger.debug(f"{self.dry_run = }")
-            self.logger.debug(f"{self.completion_kwargs = }")
-            self.logger.debug(f"{self.tools = }")
-            self.logger.debug(f"{func = }")
-            self.logger.debug(f"{args = }")
-            self.logger.debug(f"{kwargs = }")
-            self.logger.debug(f"{self.cache = }")
-            self.logger.debug(f"{self.create_completion_fn = }")
-            self.logger.debug(f"{self.openai_client = }")
+        # Check if the function is async
+        is_async = inspect.iscoroutinefunction(func)
 
-            if (
-                self.tools and not self.openai_client
-            ):  # assume oai clients support tools
-                assert litellm.supports_function_calling(self.model), (
-                    f"Model {self.model} does not support function calling"
-                )
+        if is_async:
+            @wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                self.logger.debug(f"{self.model = }")
+                self.logger.debug(f"{self.system = }")
+                self.logger.debug(f"{self.dry_run = }")
+                self.logger.debug(f"{self.completion_kwargs = }")
+                self.logger.debug(f"{self.tools = }")
+                self.logger.debug(f"{func = }")
+                self.logger.debug(f"{args = }")
+                self.logger.debug(f"{kwargs = }")
+                self.logger.debug(f"{self.cache = }")
+                self.logger.debug(f"{self.create_completion_fn = }")
+                self.logger.debug(f"{self.openai_client = }")
 
-            self.tool_definitions = (
-                [
-                    self._generate_tool_definition(tool_fn)
-                    for tool_fn in self.tools.values()
-                ]
-                if self.tools
-                else None
-            )
+                if (
+                    self.tools and not self.openai_client
+                ):  # assume oai clients support tools
+                    assert litellm.supports_function_calling(self.model), (
+                        f"Model {self.model} does not support function calling"
+                    )
 
-            # Get the function's docstring as the prompt
-            prompt_template = dedent(func.__doc__)
-
-            # Get the argument names, default values and values using inspect
-            sig = inspect.signature(func)
-            arg_names = sig.parameters.keys()
-            arg_values = {
-                name: (
-                    sig.parameters[name].default
-                    if sig.parameters[name].default is not inspect.Parameter.empty
+                self.tool_definitions = (
+                    [
+                        self._generate_tool_definition(tool_fn)
+                        for tool_fn in self.tools.values()
+                    ]
+                    if self.tools
                     else None
                 )
-                for name in arg_names
-            }
-            arg_values.update(zip(arg_names, args))
-            arg_values.update(kwargs)
 
-            # Extract image arguments
-            image_args = {}
-            for name, param in sig.parameters.items():
-                if param.annotation == ImageBytes and name in arg_values:
-                    image_args[name] = arg_values.pop(name)
+                # Get the function's docstring as the prompt
+                prompt_template = dedent(func.__doc__)
 
-            self.logger.debug(f"{arg_values = }")
+                # Get the argument names, default values and values using inspect
+                sig = inspect.signature(func)
+                arg_names = sig.parameters.keys()
+                arg_values = {
+                    name: (
+                        sig.parameters[name].default
+                        if sig.parameters[name].default is not inspect.Parameter.empty
+                        else None
+                    )
+                    for name in arg_names
+                }
+                arg_values.update(zip(arg_names, args))
+                arg_values.update(kwargs)
 
-            # Replace {name} placeholders with argument values
-            prompt_text = prompt_template.format(**arg_values)
+                # Extract image arguments
+                image_args = {}
+                for name, param in sig.parameters.items():
+                    if param.annotation == ImageBytes and name in arg_values:
+                        image_args[name] = arg_values.pop(name)
 
-            # Create the user message with text and images
-            content = [{"type": "text", "text": prompt_text}]
+                self.logger.debug(f"{arg_values = }")
 
-            # Add image content
-            for img_bytes in image_args.values():
-                img_b64_str = base64.b64encode(img_bytes).decode("utf-8")
+                # Replace {name} placeholders with argument values
+                prompt_text = prompt_template.format(**arg_values)
 
-                if self.anthropic:
-                    # Check for PNG signature
-                    if img_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-                        img_type = "image/png"
-                    # Check for JPEG signature
-                    elif img_bytes.startswith(b"\xff\xd8"):
-                        img_type = "image/jpeg"
+                # Create the user message with text and images
+                content = [{"type": "text", "text": prompt_text}]
+
+                # Add image content
+                for img_bytes in image_args.values():
+                    img_b64_str = base64.b64encode(img_bytes).decode("utf-8")
+
+                    if self.anthropic:
+                        # Check for PNG signature
+                        if img_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                            img_type = "image/png"
+                        # Check for JPEG signature
+                        elif img_bytes.startswith(b"\xff\xd8"):
+                            img_type = "image/jpeg"
+                        else:
+                            img_type = "image/jpeg"  # fallback
                     else:
-                        img_type = "image/jpeg"  # fallback
-                else:
-                    img_type = "image/jpeg"  # default for non-Anthropic models
+                        img_type = "image/jpeg"  # default for non-Anthropic models
 
-                content.append(
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": f"data:{img_type};base64,{img_b64_str}"},
+                    content.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{img_type};base64,{img_b64_str}"},
+                        }
+                    )
+
+                user_message = {"content": content, "role": "user"}
+                messages = [user_message]
+
+                # Check if the function has a return type hint of a Pydantic model
+                return_type = func.__annotations__.get("return")
+
+                self.logger.debug(f"{return_type = }")
+
+                # Add schema instructions before any LLM call if return type requires it
+                if (
+                    return_type
+                    and inspect.isclass(return_type)
+                    and issubclass(return_type, BaseModel)
+                ):
+                    schema = return_type.model_json_schema()
+                    json_schema = json.dumps(schema, indent=2)
+                    msg = {
+                        "role": "user",
+                        "content": (
+                            "Format your response according to this JSON schema:\n"
+                            f"```json\n{json_schema}\n```\n\n"
+                            "Provide the result enclosed in triple backticks with 'json' "
+                            "on the first line. Don't put control characters in the wrong "
+                            "place or the JSON will be invalid."
+                        ),
                     }
-                )
+                    messages.append(msg)
+                elif self.json_schema:
+                    json_schema = json.dumps(self.json_schema, indent=2)
+                    msg = {
+                        "role": "user",
+                        "content": (
+                            "Format your response according to this JSON schema:\n"
+                            f"```json\n{json_schema}\n```\n\n"
+                            "Provide the result enclosed in triple backticks with 'json' "
+                            "on the first line. Don't put control characters in the wrong "
+                            "place or the JSON will be invalid."
+                        ),
+                    }
+                    messages.append(msg)
 
-            user_message = {"content": content, "role": "user"}
-            messages = [user_message]
+                # Add check for Gemini streaming with tools
+                if self.gemini and self.completion_kwargs.get("stream") and self.tools:
+                    raise ValueError("Gemini models do not support streaming with tools")
 
-            # Check if the function has a return type hint of a Pydantic model
-            return_type = func.__annotations__.get("return")
-
-            self.logger.debug(f"{return_type = }")
-
-            # Add schema instructions before any LLM call if return type requires it
-            if (
-                return_type
-                and inspect.isclass(return_type)
-                and issubclass(return_type, BaseModel)
-            ):
-                schema = return_type.model_json_schema()
-                json_schema = json.dumps(schema, indent=2)
-                msg = {
-                    "role": "user",
-                    "content": (
-                        "Format your response according to this JSON schema:\n"
-                        f"```json\n{json_schema}\n```\n\n"
-                        "Provide the result enclosed in triple backticks with 'json' "
-                        "on the first line. Don't put control characters in the wrong "
-                        "place or the JSON will be invalid."
-                    ),
-                }
-                messages.append(msg)
-            elif self.json_schema:
-                json_schema = json.dumps(self.json_schema, indent=2)
-                msg = {
-                    "role": "user",
-                    "content": (
-                        "Format your response according to this JSON schema:\n"
-                        f"```json\n{json_schema}\n```\n\n"
-                        "Provide the result enclosed in triple backticks with 'json' "
-                        "on the first line. Don't put control characters in the wrong "
-                        "place or the JSON will be invalid."
-                    ),
-                }
-                messages.append(msg)
-
-            # Add check for Gemini streaming with tools
-            if self.gemini and self.completion_kwargs.get("stream") and self.tools:
-                raise ValueError("Gemini models do not support streaming with tools")
-
-            self.logger.debug("Chat History:")
-            for i, msg in enumerate(messages):
-                self.logger.debug(f"Message {i}:")
-                self.logger.debug(f"  Role: {msg.get('role', 'unknown')}")
-                self.logger.debug(f"  Content: {msg.get('content')}")
-                if "tool_calls" in msg:
-                    self.logger.debug("  Tool Calls:")
-                    for tool_call in msg["tool_calls"]:
-                        self.logger.debug(f"    Name: {tool_call.function.name}")
-                        self.logger.debug(
-                            f"    Arguments: {tool_call.function.arguments}"
-                        )
-                if "tool_call_id" in msg:
-                    self.logger.debug(f"  Tool Call ID: {msg['tool_call_id']}")
-                    self.logger.debug(f"  Tool Name: {msg.get('name')}")
+                self.logger.debug("Chat History:")
+                for i, msg in enumerate(messages):
+                    self.logger.debug(f"Message {i}:")
+                    self.logger.debug(f"  Role: {msg.get('role', 'unknown')}")
+                    self.logger.debug(f"  Content: {msg.get('content')}")
+                    if "tool_calls" in msg:
+                        self.logger.debug("  Tool Calls:")
+                        for tool_call in msg["tool_calls"]:
+                            self.logger.debug(f"    Name: {tool_call.function.name}")
+                            self.logger.debug(
+                                f"    Arguments: {tool_call.function.arguments}"
+                            )
+                    if "tool_call_id" in msg:
+                        self.logger.debug(f"  Tool Call ID: {msg['tool_call_id']}")
+                        self.logger.debug(f"  Tool Name: {msg.get('name')}")
 
                 if self.tool_definitions:
                     self.logger.debug("\nAvailable Tools:")
@@ -567,101 +655,361 @@ class Promptic:
                             f"  {tool['function']['name']}: {tool['function']['description']}"
                         )
 
-            call = None
+                call = None
 
-            if self.weave_client:
-                call = self.weave_client.create_call(
-                    op="Promptic._decorator",
-                    inputs={"messages": messages},
-                    attributes={
-                        "model": self.model,
-                        "system": self.system,
-                        "tools": self.tool_definitions,
-                        "tool_choice": "auto" if self.tool_definitions else None,
-                    },
-                    display_name="promptic_decorator",
+                if self.weave_client:
+                    call = self.weave_client.create_call(
+                        op="Promptic._decorator",
+                        inputs={"messages": messages},
+                        attributes={
+                            "model": self.model,
+                            "system": self.system,
+                            "tools": self.tool_definitions,
+                            "tool_choice": "auto" if self.tool_definitions else None,
+                        },
+                        display_name="promptic_decorator",
+                    )
+
+                while True:
+                    # Call the LLM with the prompt and tools
+                    completion_messages, response = await self._async_completion(messages)
+
+                    if call:
+                        call.inputs["messages"] = completion_messages
+
+                    if self.completion_kwargs.get("stream"):
+                        return await self._async_stream_response(response, call)
+                    else:
+                        for choice in response.choices:
+                            # Handle tool calls if present
+                            if (
+                                hasattr(choice.message, "tool_calls")
+                                and choice.message.tool_calls
+                            ):
+                                tool_calls = choice.message.tool_calls
+                                messages.append(choice.message)
+
+                                for tool_call in tool_calls:
+                                    function_name = tool_call.function.name
+                                    if function_name in self.tools:
+                                        function_args = json.loads(tool_call.function.arguments)
+                                        if self.gemini and "llm_invocation" in function_args:
+                                            function_args.pop("llm_invocation")
+                                        if self.dry_run:
+                                            self.logger.warning(
+                                                f"[DRY RUN]: {function_name = } {function_args = }"
+                                            )
+                                            function_response = f"[DRY RUN] Would have called {function_name = } {function_args = }"
+                                        else:
+                                            try:
+                                                self.logger.debug(
+                                                    f"Calling tool {function_name}({function_args}) using {self.model = }"
+                                                )
+                                                fn = self.tools[function_name]
+                                                function_args = self._deserialize_pydantic_args(
+                                                    fn, function_args
+                                                )
+                                                # Handle both async and sync tools
+                                                if inspect.iscoroutinefunction(fn):
+                                                    function_response = await fn(**function_args)
+                                                else:
+                                                    function_response = fn(**function_args)
+                                            except Exception as e:
+                                                self.logger.error(
+                                                    f"Error calling tool {function_name}({function_args}): {e}"
+                                                )
+                                                function_response = f"Error calling tool {function_name}({function_args}): {e}"
+                                        msg = {
+                                            "tool_call_id": tool_call.id,
+                                            "role": "tool",
+                                            "name": function_name,
+                                            "content": to_json(function_response),
+                                        }
+                                        messages.append(msg)
+                                continue
+
+                            # GPT and Claude have `stop` when conversation is complete
+                            # Gemini has `stop` as a finish reason when tools are used
+                            elif choice.finish_reason in ["stop", "max_tokens", "length"]:
+                                generated_text = choice.message.content
+                                result = self._parse_and_validate_response(
+                                    generated_text,
+                                    return_type=return_type,
+                                    json_schema=self.json_schema,
+                                )
+
+                                if call and self.weave_client:
+                                    self.weave_client.finish_call(call, output=result)
+
+                                return result
+
+            # Add methods explicitly
+            async_wrapper.tool = self.tool
+            async_wrapper.clear = self.clear
+            async_wrapper.message = self.message
+            async_wrapper.instance = self
+
+            # Automatically expose all other attributes from self
+            for attr_name, attr_value in self.__dict__.items():
+                if not attr_name.startswith("_"):  # Skip private attributes
+                    setattr(async_wrapper, attr_name, attr_value)
+
+            return async_wrapper
+        else:
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                self.logger.debug(f"{self.model = }")
+                self.logger.debug(f"{self.system = }")
+                self.logger.debug(f"{self.dry_run = }")
+                self.logger.debug(f"{self.completion_kwargs = }")
+                self.logger.debug(f"{self.tools = }")
+                self.logger.debug(f"{func = }")
+                self.logger.debug(f"{args = }")
+                self.logger.debug(f"{kwargs = }")
+                self.logger.debug(f"{self.cache = }")
+                self.logger.debug(f"{self.create_completion_fn = }")
+                self.logger.debug(f"{self.openai_client = }")
+
+                if (
+                    self.tools and not self.openai_client
+                ):  # assume oai clients support tools
+                    assert litellm.supports_function_calling(self.model), (
+                        f"Model {self.model} does not support function calling"
+                    )
+
+                self.tool_definitions = (
+                    [
+                        self._generate_tool_definition(tool_fn)
+                        for tool_fn in self.tools.values()
+                    ]
+                    if self.tools
+                    else None
                 )
 
-            while True:
-                # Call the LLM with the prompt and tools
-                completion_messages, response = self._completion(messages)
+                # Get the function's docstring as the prompt
+                prompt_template = dedent(func.__doc__)
 
-                if call:
-                    call.inputs["messages"] = completion_messages
+                # Get the argument names, default values and values using inspect
+                sig = inspect.signature(func)
+                arg_names = sig.parameters.keys()
+                arg_values = {
+                    name: (
+                        sig.parameters[name].default
+                        if sig.parameters[name].default is not inspect.Parameter.empty
+                        else None
+                    )
+                    for name in arg_names
+                }
+                arg_values.update(zip(arg_names, args))
+                arg_values.update(kwargs)
 
-                if self.completion_kwargs.get("stream"):
-                    return self._stream_response(response, call)
+                # Extract image arguments
+                image_args = {}
+                for name, param in sig.parameters.items():
+                    if param.annotation == ImageBytes and name in arg_values:
+                        image_args[name] = arg_values.pop(name)
 
-                for choice in response.choices:
-                    # Handle tool calls if present
-                    if (
-                        hasattr(choice.message, "tool_calls")
-                        and choice.message.tool_calls
-                    ):
-                        tool_calls = choice.message.tool_calls
-                        messages.append(choice.message)
+                self.logger.debug(f"{arg_values = }")
 
-                        for tool_call in tool_calls:
-                            function_name = tool_call.function.name
-                            if function_name in self.tools:
-                                function_args = json.loads(tool_call.function.arguments)
-                                if self.gemini and "llm_invocation" in function_args:
-                                    function_args.pop("llm_invocation")
-                                if self.dry_run:
-                                    self.logger.warning(
-                                        f"[DRY RUN]: {function_name = } {function_args = }"
-                                    )
-                                    function_response = f"[DRY RUN] Would have called {function_name = } {function_args = }"
-                                else:
-                                    try:
-                                        self.logger.debug(
-                                            f"Calling tool {function_name}({function_args}) using {self.model = }"
-                                        )
-                                        fn = self.tools[function_name]
-                                        function_args = self._deserialize_pydantic_args(
-                                            fn, function_args
-                                        )
-                                        function_response = fn(**function_args)
-                                    except Exception as e:
-                                        self.logger.error(
-                                            f"Error calling tool {function_name}({function_args}): {e}"
-                                        )
-                                        function_response = f"Error calling tool {function_name}({function_args}): {e}"
-                                msg = {
-                                    "tool_call_id": tool_call.id,
-                                    "role": "tool",
-                                    "name": function_name,
-                                    "content": to_json(function_response),
-                                }
-                                messages.append(msg)
+                # Replace {name} placeholders with argument values
+                prompt_text = prompt_template.format(**arg_values)
 
-                    # GPT and Claude have `stop` when conversation is complete
-                    # Gemini has `stop` as a finish reason when tools are used
-                    elif choice.finish_reason in ["stop", "max_tokens", "length"]:
-                        generated_text = choice.message.content
-                        result = self._parse_and_validate_response(
-                            generated_text,
-                            return_type=return_type,
-                            json_schema=self.json_schema,
+                # Create the user message with text and images
+                content = [{"type": "text", "text": prompt_text}]
+
+                # Add image content
+                for img_bytes in image_args.values():
+                    img_b64_str = base64.b64encode(img_bytes).decode("utf-8")
+
+                    if self.anthropic:
+                        # Check for PNG signature
+                        if img_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                            img_type = "image/png"
+                        # Check for JPEG signature
+                        elif img_bytes.startswith(b"\xff\xd8"):
+                            img_type = "image/jpeg"
+                        else:
+                            img_type = "image/jpeg"  # fallback
+                    else:
+                        img_type = "image/jpeg"  # default for non-Anthropic models
+
+                    content.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{img_type};base64,{img_b64_str}"},
+                        }
+                    )
+
+                user_message = {"content": content, "role": "user"}
+                messages = [user_message]
+
+                # Check if the function has a return type hint of a Pydantic model
+                return_type = func.__annotations__.get("return")
+
+                self.logger.debug(f"{return_type = }")
+
+                # Add schema instructions before any LLM call if return type requires it
+                if (
+                    return_type
+                    and inspect.isclass(return_type)
+                    and issubclass(return_type, BaseModel)
+                ):
+                    schema = return_type.model_json_schema()
+                    json_schema = json.dumps(schema, indent=2)
+                    msg = {
+                        "role": "user",
+                        "content": (
+                            "Format your response according to this JSON schema:\n"
+                            f"```json\n{json_schema}\n```\n\n"
+                            "Provide the result enclosed in triple backticks with 'json' "
+                            "on the first line. Don't put control characters in the wrong "
+                            "place or the JSON will be invalid."
+                        ),
+                    }
+                    messages.append(msg)
+                elif self.json_schema:
+                    json_schema = json.dumps(self.json_schema, indent=2)
+                    msg = {
+                        "role": "user",
+                        "content": (
+                            "Format your response according to this JSON schema:\n"
+                            f"```json\n{json_schema}\n```\n\n"
+                            "Provide the result enclosed in triple backticks with 'json' "
+                            "on the first line. Don't put control characters in the wrong "
+                            "place or the JSON will be invalid."
+                        ),
+                    }
+                    messages.append(msg)
+
+                # Add check for Gemini streaming with tools
+                if self.gemini and self.completion_kwargs.get("stream") and self.tools:
+                    raise ValueError("Gemini models do not support streaming with tools")
+
+                self.logger.debug("Chat History:")
+                for i, msg in enumerate(messages):
+                    self.logger.debug(f"Message {i}:")
+                    self.logger.debug(f"  Role: {msg.get('role', 'unknown')}")
+                    self.logger.debug(f"  Content: {msg.get('content')}")
+                    if "tool_calls" in msg:
+                        self.logger.debug("  Tool Calls:")
+                        for tool_call in msg["tool_calls"]:
+                            self.logger.debug(f"    Name: {tool_call.function.name}")
+                            self.logger.debug(
+                                f"    Arguments: {tool_call.function.arguments}"
+                            )
+                    if "tool_call_id" in msg:
+                        self.logger.debug(f"  Tool Call ID: {msg['tool_call_id']}")
+                        self.logger.debug(f"  Tool Name: {msg.get('name')}")
+
+                if self.tool_definitions:
+                    self.logger.debug("\nAvailable Tools:")
+                    for tool in self.tool_definitions:
+                        self.logger.debug(
+                            f"  {tool['function']['name']}: {tool['function']['description']}"
                         )
 
-                        if call and self.weave_client:
-                            self.weave_client.finish_call(call, output=result)
+                call = None
 
-                        return result
+                if self.weave_client:
+                    call = self.weave_client.create_call(
+                        op="Promptic._decorator",
+                        inputs={"messages": messages},
+                        attributes={
+                            "model": self.model,
+                            "system": self.system,
+                            "tools": self.tool_definitions,
+                            "tool_choice": "auto" if self.tool_definitions else None,
+                        },
+                        display_name="promptic_decorator",
+                    )
 
-        # Add methods explicitly
-        wrapper.tool = self.tool
-        wrapper.clear = self.clear
-        wrapper.message = self.message
-        wrapper.instance = self
+                while True:
+                    # Call the LLM with the prompt and tools
+                    completion_messages, response = self._completion(messages)
 
-        # Automatically expose all other attributes from self
-        for attr_name, attr_value in self.__dict__.items():
-            if not attr_name.startswith("_"):  # Skip private attributes
-                setattr(wrapper, attr_name, attr_value)
+                    if call:
+                        call.inputs["messages"] = completion_messages
 
-        return wrapper
+                    if self.completion_kwargs.get("stream"):
+                        return self._stream_response(response, call)
+                    else:
+                        for choice in response.choices:
+                            # Handle tool calls if present
+                            if (
+                                hasattr(choice.message, "tool_calls")
+                                and choice.message.tool_calls
+                            ):
+                                tool_calls = choice.message.tool_calls
+                                messages.append(choice.message)
+
+                                for tool_call in tool_calls:
+                                    function_name = tool_call.function.name
+                                    if function_name in self.tools:
+                                        function_args = json.loads(tool_call.function.arguments)
+                                        if self.gemini and "llm_invocation" in function_args:
+                                            function_args.pop("llm_invocation")
+                                        if self.dry_run:
+                                            self.logger.warning(
+                                                f"[DRY RUN]: {function_name = } {function_args = }"
+                                            )
+                                            function_response = f"[DRY RUN] Would have called {function_name = } {function_args = }"
+                                        else:
+                                            try:
+                                                self.logger.debug(
+                                                    f"Calling tool {function_name}({function_args}) using {self.model = }"
+                                                )
+                                                fn = self.tools[function_name]
+                                                function_args = self._deserialize_pydantic_args(
+                                                    fn, function_args
+                                                )
+                                                # If the tool function is async, we can't call it from a sync context
+                                                if inspect.iscoroutinefunction(fn):
+                                                    raise ValueError(
+                                                        f"Cannot call async tool function {function_name} from sync context. "
+                                                        f"Either make the decorated function async or make the tool function sync."
+                                                    )
+                                                function_response = fn(**function_args)
+                                            except Exception as e:
+                                                self.logger.error(
+                                                    f"Error calling tool {function_name}({function_args}): {e}"
+                                                )
+                                                function_response = f"Error calling tool {function_name}({function_args}): {e}"
+                                        msg = {
+                                            "tool_call_id": tool_call.id,
+                                            "role": "tool",
+                                            "name": function_name,
+                                            "content": to_json(function_response),
+                                        }
+                                        messages.append(msg)
+                                continue
+
+                            # GPT and Claude have `stop` when conversation is complete
+                            # Gemini has `stop` as a finish reason when tools are used
+                            elif choice.finish_reason in ["stop", "max_tokens", "length"]:
+                                generated_text = choice.message.content
+                                result = self._parse_and_validate_response(
+                                    generated_text,
+                                    return_type=return_type,
+                                    json_schema=self.json_schema,
+                                )
+
+                                if call and self.weave_client:
+                                    self.weave_client.finish_call(call, output=result)
+
+                                return result
+
+            # Add methods explicitly
+            wrapper.tool = self.tool
+            wrapper.clear = self.clear
+            wrapper.message = self.message
+            wrapper.instance = self
+
+            # Automatically expose all other attributes from self
+            for attr_name, attr_value in self.__dict__.items():
+                if not attr_name.startswith("_"):  # Skip private attributes
+                    setattr(wrapper, attr_name, attr_value)
+
+            return wrapper
 
     def _stream_response(self, response, call=None):
         current_tool_calls = {}
@@ -710,6 +1058,106 @@ class Promptic:
                                     if tool_info["name"] in self.tools:
                                         if self.dry_run:
                                             self.logger.warning(
+                                                f"[DRY RUN]: {tool_info['name']} {function_args = }"
+                                            )
+                                            function_response = f"[DRY RUN] Would have called {tool_info['name']} {function_args = }"
+                                        else:
+                                            try:
+                                                self.logger.debug(
+                                                    f"Calling tool {tool_info['name']}({function_args}) using {self.model = }"
+                                                )
+                                                fn = self.tools[tool_info["name"]]
+                                                function_args = self._deserialize_pydantic_args(
+                                                    fn, function_args
+                                                )
+                                                # Cannot handle async tools in streaming mode for non-async contexts
+                                                if inspect.iscoroutinefunction(fn):
+                                                    self.logger.warning(
+                                                        f"Async tool {tool_info['name']} cannot be called in streaming mode from sync context"
+                                                    )
+                                                else:
+                                                    fn(**function_args)
+                                            except Exception as e:
+                                                self.logger.error(
+                                                    f"Error calling tool {tool_info['name']}({function_args}): {e}"
+                                                )
+                                                function_response = f"Error calling tool {tool_info['name']}({function_args}): {e}"
+                                        # Clear after successful execution
+                                        del current_tool_calls[current_index]
+                                except json.JSONDecodeError:
+                                    # Arguments not complete yet, continue accumulating
+                                    continue
+                        except Exception as e:
+                            self.logger.error(f"Error executing tool: {e}")
+                            self.logger.exception(e)
+                            continue
+
+            # Stream regular content and accumulate
+            if (
+                hasattr(part.choices[0].delta, "content")
+                and part.choices[0].delta.content
+            ):
+                content = part.choices[0].delta.content
+                accumulated_response += content
+                yield content
+
+        # After streaming is complete, add to state if memory is enabled
+        if self.state:
+            self.state.add_message(
+                {"content": accumulated_response, "role": "assistant"}
+            )
+
+        if call and self.weave_client:
+            self.weave_client.finish_call(call, output=accumulated_response)
+
+    async def _async_stream_response(self, response, call=None):
+        """Async version of _stream_response for use with async functions."""
+        current_tool_calls = {}
+        current_index = None
+        accumulated_response = ""
+
+        async for part in response:
+            # Handle tool calls in streaming mode
+            if (
+                hasattr(part.choices[0].delta, "tool_calls")
+                and part.choices[0].delta.tool_calls
+            ):
+                tool_calls = part.choices[0].delta.tool_calls
+
+                for tool_call in tool_calls:
+                    # If we have an ID and name, this is the start of a new tool call
+                    if tool_call.id:
+                        current_index = tool_call.index
+                        current_tool_calls[current_index] = {
+                            "id": tool_call.id,
+                            "name": tool_call.function.name,
+                            "arguments": "",
+                        }
+
+                    # If we don't have an ID but have arguments, append to current tool call
+                    elif tool_call.function.arguments and current_index is not None:
+                        current_tool_calls[current_index]["arguments"] += (
+                            tool_call.function.arguments
+                        )
+
+                        # Try to execute if arguments look complete
+                        tool_info = current_tool_calls[current_index]
+                        try:
+                            args_str = tool_info["arguments"]
+                            if (
+                                args_str.strip() and args_str[-1] == "}"
+                            ):  # Check if arguments look complete
+                                try:
+                                    function_args = json.loads(args_str)
+                                    if (
+                                        self.gemini
+                                        and "llm_invocation" in function_args
+                                    ):
+                                        function_args.pop("llm_invocation")
+
+                                    if tool_info["name"] in self.tools:
+                                        if self.dry_run:
+                                            self.logger.warning(
                                                 f"[DRY RUN] Would have called {tool_info['name']} with {function_args}"
                                             )
                                         else:
@@ -717,12 +1165,14 @@ class Promptic:
                                                 f"Calling tool {tool_info['name']}({function_args}) using {self.model = }"
                                             )
                                             fn = self.tools[tool_info["name"]]
-                                            function_args = (
-                                                self._deserialize_pydantic_args(
-                                                    fn, function_args
-                                                )
+                                            function_args = self._deserialize_pydantic_args(
+                                                fn, function_args
                                             )
-                                            fn(**function_args)
+                                            # Handle both async and sync tools
+                                            if inspect.iscoroutinefunction(fn):
+                                                await fn(**function_args)
+                                            else:
+                                                fn(**function_args)
                                         # Clear after successful execution
                                         del current_tool_calls[current_index]
                                 except json.JSONDecodeError:
