@@ -64,6 +64,89 @@ print(analyze_sentiment("The product was okay but shipping took forever"))
 # - Significant dissatisfaction with shipping time
 ```
 
+### Class Method Support
+
+Async-Promptic supports using the `@llm` decorator on class methods, allowing you to organize LLM-powered functions within classes for better state management and code organization:
+
+```py
+# examples/class_method_example.py
+
+from promptic import llm
+
+class LanguageAssistant:
+    """A class that demonstrates using @llm decorator with class methods"""
+    
+    def __init__(self):
+        self.translation_count = 0
+        
+    # Example of an async class method with @llm decorator
+    @llm(model="gpt-3.5-turbo")
+    async def translate(self, text, target="Spanish", _result=None):
+        """Translate the following text: '{text}' into {target}"""
+        # Optional post-processing of the LLM result
+        self.translation_count += 1
+        print(f"Translation #{self.translation_count} completed")
+        return f"Translation result: {_result}"
+    
+    # Example of class method with tools
+    @llm(model="gpt-3.5-turbo")
+    async def weather_recommendation(self, city, _result=None):
+        """
+        You are a travel assistant. 
+        Provide a brief travel recommendation for {city}.
+        Use the fetch_weather tool to check the weather there.
+        """
+        print(f"Processing recommendation for {city}")
+        return f"Processed recommendation: {_result}"
+    
+    # Register an async tool with the class method
+    @weather_recommendation.tool
+    async def fetch_weather(self, city):
+        """Fetches weather data for a city"""
+        return f"Sunny and 75°F in {city}"
+
+# Usage
+async def main():
+    assistant = LanguageAssistant()
+    
+    # Call the class method
+    translation = await assistant.translate("Hello world", target="French")
+    print(translation)
+    # Translation #1 completed
+    # Translation result: Bonjour le monde
+    
+    # Class methods maintain state
+    translation = await assistant.translate("How are you?", target="German")
+    print(f"Total translations: {assistant.translation_count}")
+    # Translation #2 completed
+    # Total translations: 2
+    
+    # Class methods with tools
+    recommendation = await assistant.weather_recommendation("Paris")
+    print(recommendation)
+    # Processing recommendation for Paris
+    # Processed recommendation: Paris is currently sunny with temperatures of 75°F...
+```
+
+The `_result` parameter in class methods is optional and allows post-processing of the LLM's response. When present, it receives the LLM's output for further processing. This enables you to:
+
+- Transform or validate the LLM output before returning it
+- Update class state based on the response
+- Log information or track usage metrics
+- Chain multiple LLM calls together with shared context
+
+If you don't need to process the LLM output, you can omit the `_result` parameter entirely:
+
+```py
+@llm(model="gpt-3.5-turbo")
+def count_words(self, text):
+    """Count the number of words in the following text: '{text}'"""
+    # No _result parameter, so you won't receive the LLM output here
+    return f"The text has approximately {len(text.split())} words"
+```
+
+Class method support combines well with Async-Promptic's other features like structured outputs, tools, and streaming, giving you powerful ways to organize complex LLM-powered applications.
+
 ### Async Support
 
 Async-Promptic fully supports async/await syntax, making it ideal for modern Python applications using frameworks like FastAPI or asynchronous libraries.
