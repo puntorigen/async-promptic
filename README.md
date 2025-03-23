@@ -105,6 +105,13 @@ class LanguageAssistant:
         """Fetches weather data for a city"""
         return f"Sunny and 75°F in {city}"
 
+    # Simple example without the _result parameter
+    @llm(model="gpt-3.5-turbo")
+    async def summarize(self, text) -> str:
+        """Provide a concise one-sentence summary of: '{text}'"""
+        # The method body won't execute
+        # The LLM response is returned directly
+    
 # Usage
 async def main():
     assistant = LanguageAssistant()
@@ -126,6 +133,12 @@ async def main():
     print(recommendation)
     # Processing recommendation for Paris
     # Processed recommendation: Paris is currently sunny with temperatures of 75°F...
+    
+    # Simple example without _result parameter
+    summary = await assistant.summarize("Async-Promptic is a fork of Promptic that adds full async support for LLM development. It supports class methods, structured outputs, and function calling.")
+    print(summary)
+    # A concise one-sentence summary of the text about Async-Promptic and its features.
+
 ```
 
 The `_result` parameter in class methods is optional and allows post-processing of the LLM's response. When present, it receives the LLM's output for further processing. This enables you to:
@@ -135,7 +148,7 @@ The `_result` parameter in class methods is optional and allows post-processing 
 - Log information or track usage metrics
 - Chain multiple LLM calls together with shared context
 
-If you don't need to process the LLM output, you can omit the `_result` parameter entirely:
+If you don't need to process the LLM output, you can omit the `_result` parameter entirely, as shown in the `summarize` method above. The LLM response will be returned directly.
 
 ```py
 @llm(model="gpt-3.5-turbo")

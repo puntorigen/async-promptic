@@ -765,8 +765,11 @@ class Promptic:
                                     # Only add result parameter if it exists in the function signature
                                     if '_result' in sig.parameters:
                                         updated_args['_result'] = result
-                                    
-                                    return await func(instance, **updated_args)
+                                        return await func(instance, **updated_args)
+                                    else:
+                                        # If no _result parameter, just return the result directly
+                                        # This allows class methods to work like standalone functions
+                                        return result
                                 
                                 return result
 
@@ -1045,8 +1048,11 @@ class Promptic:
                                     # Only add result parameter if it exists in the function signature
                                     if '_result' in sig.parameters:
                                         updated_args['_result'] = result
-                                    
-                                    return func(instance, **updated_args)
+                                        return func(instance, **updated_args)
+                                    else:
+                                        # If no _result parameter, just return the result directly
+                                        # This allows class methods to work like standalone functions
+                                        return result
                                 
                                 return result
 
