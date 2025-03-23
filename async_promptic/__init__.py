@@ -19,7 +19,7 @@ from litellm import completion as litellm_completion
 from litellm import acompletion as litellm_acompletion
 from pydantic import BaseModel
 
-__version__ = "5.4.2"
+__version__ = "5.4.3"
 
 SystemPrompt = Optional[Union[str, List[str], List[Dict[str, str]]]]
 
