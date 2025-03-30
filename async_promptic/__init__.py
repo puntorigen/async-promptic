@@ -797,6 +797,47 @@ class Promptic:
                                             "content": to_json(function_response),
                                         }
                                         messages.append(msg)
+                                
+                                # After all tool calls are processed, get a final response with the tool results
+                                completion_messages, response = await self._async_completion_with_retry(messages)
+                                
+                                if call:
+                                    call.inputs["messages"] = completion_messages
+                                
+                                if self.completion_kwargs.get("stream"):
+                                    return await self._async_stream_response(response, call)
+                                else:
+                                    # Process the final response from the LLM after tools have been used
+                                    generated_text = response.choices[0].message.content
+                                    result = self._parse_and_validate_response(
+                                        generated_text,
+                                        return_type=return_type,
+                                        json_schema=self.json_schema,
+                                    )
+
+                                    if call and self.weave_client:
+                                        self.weave_client.finish_call(call, output=result)
+
+                                    # For class methods, if the original function is also decorated to process LLM results,
+                                    # we need to call it with the instance and the result
+                                    if is_method and instance is not None:
+                                        # Add logging to debug class method invocation
+                                        self.logger.debug(f"Calling class method {func.__name__} with instance: {instance}")
+                                        
+                                        # Check if the function has a '_result' parameter
+                                        sig = inspect.signature(func)
+                                        updated_args = arg_values.copy()
+                                        
+                                        # Only add result parameter if it exists in the function signature
+                                        if '_result' in sig.parameters:
+                                            updated_args['_result'] = result
+                                            return await func(instance, **updated_args)
+                                        else:
+                                            # If no _result parameter, just return the result directly
+                                            # This allows class methods to work like standalone functions
+                                            return result
+                                    
+                                    return result
                                 continue
 
                             # GPT and Claude have `stop` when conversation is complete
@@ -811,14 +852,14 @@ class Promptic:
 
                                 if call and self.weave_client:
                                     self.weave_client.finish_call(call, output=result)
-
+                                
                                 # For class methods, if the original function is also decorated to process LLM results,
                                 # we need to call it with the instance and the result
                                 if is_method and instance is not None:
                                     # Add logging to debug class method invocation
                                     self.logger.debug(f"Calling class method {func.__name__} with instance: {instance}")
                                     
-                                    # Check if the function has a 'result' parameter
+                                    # Check if the function has a '_result' parameter
                                     sig = inspect.signature(func)
                                     updated_args = arg_values.copy()
                                     
@@ -1084,6 +1125,47 @@ class Promptic:
                                             "content": to_json(function_response),
                                         }
                                         messages.append(msg)
+                                
+                                # After all tool calls are processed, get a final response with the tool results
+                                completion_messages, response = self._completion_with_retry(messages)
+                                
+                                if call:
+                                    call.inputs["messages"] = completion_messages
+                                
+                                if self.completion_kwargs.get("stream"):
+                                    return self._stream_response(response, call)
+                                else:
+                                    # Process the final response from the LLM after tools have been used
+                                    generated_text = response.choices[0].message.content
+                                    result = self._parse_and_validate_response(
+                                        generated_text,
+                                        return_type=return_type,
+                                        json_schema=self.json_schema,
+                                    )
+
+                                    if call and self.weave_client:
+                                        self.weave_client.finish_call(call, output=result)
+                                    
+                                    # For class methods, if the original function is also decorated to process LLM results,
+                                    # we need to call it with the instance and the result
+                                    if is_method and instance is not None:
+                                        # Add logging to debug class method invocation
+                                        self.logger.debug(f"Calling class method {func.__name__} with instance: {instance}")
+                                        
+                                        # Check if the function has a '_result' parameter
+                                        sig = inspect.signature(func)
+                                        updated_args = arg_values.copy()
+                                        
+                                        # Only add result parameter if it exists in the function signature
+                                        if '_result' in sig.parameters:
+                                            updated_args['_result'] = result
+                                            return func(instance, **updated_args)
+                                        else:
+                                            # If no _result parameter, just return the result directly
+                                            # This allows class methods to work like standalone functions
+                                            return result
+                                    
+                                    return result
                                 continue
 
                             # GPT and Claude have `stop` when conversation is complete
@@ -1105,7 +1187,7 @@ class Promptic:
                                     # Add logging to debug class method invocation
                                     self.logger.debug(f"Calling class method {func.__name__} with instance: {instance}")
                                     
-                                    # Check if the function has a 'result' parameter
+                                    # Check if the function has a '_result' parameter
                                     sig = inspect.signature(func)
                                     updated_args = arg_values.copy()
                                     
