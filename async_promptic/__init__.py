@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from stamina import retry
 from litellm.exceptions import RateLimitError, InternalServerError, APIError, Timeout
 
-__version__ = "5.4.5"
+__version__ = "5.4.6"
 
 SystemPrompt = Optional[Union[str, List[str], List[Dict[str, str]]]]
 
