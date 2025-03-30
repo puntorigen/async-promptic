@@ -17,7 +17,7 @@ classifiers = [
 description = "90% of what you need for LLM app development. Nothing you don't."
 license = {file = "LICENSE"}
 name = "async-promptic"
-version = "5.4.3"
+version = "5.4.4"
 dependencies = [
   "jsonschema>=4.23.0",
   "litellm~=1.38",
@@ -37,6 +37,7 @@ dev-dependencies = [
     "tenacity~=9.0.0",
     "pre-commit>=4.0.1",
     "openai>=1.58.1",
+    "stamina>=25.1.0",
 ]
 
 [tool.pytest.ini_options]

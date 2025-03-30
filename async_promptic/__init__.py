@@ -18,12 +18,17 @@ from jsonschema import validate as validate_json_schema
 from litellm import completion as litellm_completion
 from litellm import acompletion as litellm_acompletion
 from pydantic import BaseModel
+from stamina import retry
+from litellm.exceptions import RateLimitError, InternalServerError, APIError, Timeout
 
-__version__ = "5.4.3"
+__version__ = "5.4.4"
 
 SystemPrompt = Optional[Union[str, List[str], List[Dict[str, str]]]]
 
 ImageBytes = bytes
+
+# Define common errors that should be retried
+LITELLM_ERRORS = (RateLimitError, InternalServerError, APIError, Timeout)
 
 
 class State:
@@ -164,26 +169,30 @@ class Promptic:
         return result
 
     def _completion(self, messages: list[dict], **kwargs):
+        """Internal method to handle completion requests with retry support"""
         new_messages = self._set_anthropic_cache(messages)
         previous_messages = self.state.get_messages() if self.state else []
-
         completion_messages = self.system_messages + previous_messages + new_messages
 
-        cached_count = 0
+        self.logger.debug(f"{self.model = }")
+        self.logger.debug(f"{completion_messages = }")
+        self.logger.debug(f"{self.tool_definitions = }")
+        self.logger.debug(f"{self.completion_kwargs = }")
+        self.logger.debug(f"{kwargs = }")
 
-        for msg in completion_messages:
-            if hasattr(msg, "get") and msg.get("cache_control"):
-                if cached_count == self.anthropic_cached_block_limit:
-                    msg.pop("cache_control")
-                else:
-                    cached_count += 1
+        # Apply default cache behavior for Anthropic models
+        self._set_anthropic_cache(completion_messages)
+        
+        # Filter out internal parameters that shouldn't be passed to litellm
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ['retry', 'retry_enabled', 'retry_max_attempts']}
+        filtered_completion_kwargs = {k: v for k, v in self.completion_kwargs.items() if k not in ['retry', 'retry_enabled', 'retry_max_attempts']}
 
         completion = self.create_completion_fn(
             model=self.model,
             messages=completion_messages,
             tools=self.tool_definitions,
             tool_choice="auto" if self.tool_definitions else None,
-            **(self.completion_kwargs | kwargs),
+            **(filtered_completion_kwargs | filtered_kwargs),
         )
 
         if self.state:
@@ -193,20 +202,23 @@ class Promptic:
         return completion_messages, completion
 
     async def _async_completion(self, messages: list[dict], **kwargs):
-        """Async version of _completion for use with async functions."""
+        """Async version of _completion for use with async functions with retry support."""
         new_messages = self._set_anthropic_cache(messages)
         previous_messages = self.state.get_messages() if self.state else []
-
         completion_messages = self.system_messages + previous_messages + new_messages
 
-        cached_count = 0
+        self.logger.debug(f"{self.model = }")
+        self.logger.debug(f"{completion_messages = }")
+        self.logger.debug(f"{self.tool_definitions = }")
+        self.logger.debug(f"{self.completion_kwargs = }")
+        self.logger.debug(f"{kwargs = }")
 
-        for msg in completion_messages:
-            if hasattr(msg, "get") and msg.get("cache_control"):
-                if cached_count == self.anthropic_cached_block_limit:
-                    msg.pop("cache_control")
-                else:
-                    cached_count += 1
+        # Apply Anthropic caching behavior
+        self._set_anthropic_cache(completion_messages)
+        
+        # Filter out internal parameters that shouldn't be passed to litellm
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k not in ['retry', 'retry_enabled', 'retry_max_attempts']}
+        filtered_completion_kwargs = {k: v for k, v in self.completion_kwargs.items() if k not in ['retry', 'retry_enabled', 'retry_max_attempts']}
 
         # Check if create_completion_fn is an async function
         if inspect.iscoroutinefunction(self.create_completion_fn):
@@ -215,7 +227,7 @@ class Promptic:
                 messages=completion_messages,
                 tools=self.tool_definitions,
                 tool_choice="auto" if self.tool_definitions else None,
-                **(self.completion_kwargs | kwargs),
+                **(filtered_completion_kwargs | filtered_kwargs),
             )
         else:
             # For async contexts, use litellm's acompletion function
@@ -224,7 +236,7 @@ class Promptic:
                 messages=completion_messages,
                 tools=self.tool_definitions,
                 tool_choice="auto" if self.tool_definitions else None,
-                **(self.completion_kwargs | kwargs),
+                **(filtered_completion_kwargs | filtered_kwargs),
             )
 
         if self.state:
@@ -444,7 +456,7 @@ class Promptic:
     def decorate(cls, func: Callable = None, **kwargs):
         """See Promptic.__init__ for valid kwargs."""
         instance = cls(**kwargs)
-        return instance._decorator(func) if func else instance
+        return instance._decorator(func) if func else instance._decorator
 
     def _clear_tools(self):
         self.tools = {}
@@ -454,10 +466,31 @@ class Promptic:
         self.state = None
 
     def llm(self, func: Callable = None, **kwargs):
-        """Decorate a function with the Promptic instance."""
+        """Decorate a function with the Promptic instance.
+        
+        Args:
+            func (Callable, optional): Function to decorate. Defaults to None.
+            retry (bool or int, optional): If True, enables retry with default settings.
+                If an integer, specifies the number of retry attempts.
+                If False, disables retry functionality. Defaults to True.
+            **kwargs: Additional arguments passed to Promptic.
+        
+        Returns:
+            Callable: Decorated function.
+        """
         new_instance = copy.copy(self)
         new_instance._clear_tools()
         new_instance._disable_state()
+
+        # Handle the retry parameter
+        retry_setting = kwargs.pop('retry', True)
+        new_instance.retry_enabled = bool(retry_setting)
+        
+        # If retry is an integer, use it as max_attempts
+        if isinstance(retry_setting, int) and retry_setting > 0:
+            new_instance.retry_max_attempts = retry_setting
+        else:
+            new_instance.retry_max_attempts = 3  # Default to 3 attempts
 
         for key, value in kwargs.items():
             setattr(new_instance, key, value)
@@ -487,6 +520,33 @@ class Promptic:
         return function_args
 
     def _decorator(self, func: Callable):
+        if func is None:
+            return self
+        
+        # Create the proper retry-decorated version of completion methods
+        # if retry is enabled (default)
+        if hasattr(self, 'retry_enabled') and self.retry_enabled:
+            max_attempts = getattr(self, 'retry_max_attempts', 3)
+            
+            # Define retry decorator for completion methods
+            completion_retry = retry(
+                on=LITELLM_ERRORS,
+                attempts=max_attempts
+            )
+            
+            # Create retry-decorated versions of the completion methods
+            self._completion_with_retry = completion_retry(self._completion)
+            self._async_completion_with_retry = completion_retry(self._async_completion)
+        else:
+            # If retry is disabled, use the original methods
+            self._completion_with_retry = self._completion
+            self._async_completion_with_retry = self._async_completion
+        
+        # Check if the function is async
+        is_async = inspect.iscoroutinefunction(func)
+        # Check if the function is a method of a class
+        is_method = inspect.ismethod(func) or (hasattr(func, "__qualname__") and "." in func.__qualname__)
+
         return_type = func.__annotations__.get("return")
 
         if (
@@ -681,9 +741,9 @@ class Promptic:
                         display_name="promptic_decorator",
                     )
 
-                while True:
+                try:
                     # Call the LLM with the prompt and tools
-                    completion_messages, response = await self._async_completion(messages)
+                    completion_messages, response = await self._async_completion_with_retry(messages)
 
                     if call:
                         call.inputs["messages"] = completion_messages
@@ -772,6 +832,10 @@ class Promptic:
                                         return result
                                 
                                 return result
+
+                except LITELLM_ERRORS as e:
+                    self.logger.warning(f"Error: {e}")
+                    raise
 
             # Add methods explicitly
             async_wrapper.tool = self.tool
@@ -962,9 +1026,9 @@ class Promptic:
                         display_name="promptic_decorator",
                     )
 
-                while True:
+                try:
                     # Call the LLM with the prompt and tools
-                    completion_messages, response = self._completion(messages)
+                    completion_messages, response = self._completion_with_retry(messages)
 
                     if call:
                         call.inputs["messages"] = completion_messages
@@ -1056,6 +1120,10 @@ class Promptic:
                                 
                                 return result
 
+                except LITELLM_ERRORS as e:
+                    self.logger.warning(f"Error: {e}")
+                    raise
+
             # Add methods explicitly
             wrapper.tool = self.tool
             wrapper.clear = self.clear
@@ -1116,30 +1184,23 @@ class Promptic:
                                     if tool_info["name"] in self.tools:
                                         if self.dry_run:
                                             self.logger.warning(
-                                                f"[DRY RUN]: {tool_info['name']} {function_args = }"
+                                                f"[DRY RUN] Would have called {tool_info['name']} with {function_args}"
                                             )
-                                            function_response = f"[DRY RUN] Would have called {tool_info['name']} {function_args = }"
                                         else:
-                                            try:
-                                                self.logger.debug(
-                                                    f"Calling tool {tool_info['name']}({function_args}) using {self.model = }"
+                                            self.logger.debug(
+                                                f"Calling tool {tool_info['name']}({function_args}) using {self.model = }"
+                                            )
+                                            fn = self.tools[tool_info["name"]]
+                                            function_args = self._deserialize_pydantic_args(
+                                                fn, function_args
+                                            )
+                                            # Handle both async and sync tools
+                                            if inspect.iscoroutinefunction(fn):
+                                                raise ValueError(
+                                                    f"Cannot call async tool function {tool_info['name']} from sync context. "
+                                                    f"Either make the decorated function async or make the tool function sync."
                                                 )
-                                                fn = self.tools[tool_info["name"]]
-                                                function_args = self._deserialize_pydantic_args(
-                                                    fn, function_args
-                                                )
-                                                # Handle both async and sync tools
-                                                if inspect.iscoroutinefunction(fn):
-                                                    raise ValueError(
-                                                        f"Cannot call async tool function {tool_info['name']} from sync context. "
-                                                        f"Either make the decorated function async or make the tool function sync."
-                                                    )
-                                                function_response = fn(**function_args)
-                                            except Exception as e:
-                                                self.logger.error(
-                                                    f"Error calling tool {tool_info['name']}({function_args}): {e}"
-                                                )
-                                                function_response = f"Error calling tool {tool_info['name']}({function_args}): {e}"
+                                            function_response = fn(**function_args)
                                         # Clear after successful execution
                                         del current_tool_calls[current_index]
                                 except json.JSONDecodeError:

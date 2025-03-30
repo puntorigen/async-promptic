@@ -495,28 +495,44 @@ print(jarvis("Please turn the light on and check the weather in San Francisco"))
 
 ### Resiliency
 
-`promptic` pairs perfectly with [tenacity](https://github.com/jd/tenacity) for handling rate limits, temporary API failures, and more.
+Promptic has built-in retry support for handling rate limits, temporary API failures, and other common LLM errors. You can enable retry functionality by passing the `retry` parameter to the `@llm` decorator.
 
 ```py
-# examples/resiliency.py
+# examples/retry_example.py
 
-from tenacity import retry, wait_exponential, retry_if_exception_type
 from async_promptic import llm
-from litellm.exceptions import RateLimitError
+from litellm.exceptions import RateLimitError, InternalServerError, APIError, Timeout
 
-
-@retry(
-    wait=wait_exponential(multiplier=1, min=4, max=10),
-    retry=retry_if_exception_type(RateLimitError),
-)
-@llm
+# Retry with default settings (3 attempts, exponential backoff)
+@llm(retry=True)
 def generate_summary(text):
     """Summarize this text in 2-3 sentences: {text}"""
 
 
-generate_summary("Long article text here...")
+# Specify the number of retry attempts
+@llm(retry=5)  # Will retry up to 5 times
+def generate_headline(text):
+    """Create a catchy headline for this article: {text}"""
 
+
+# Disable retry functionality
+@llm(retry=False)
+def generate_tags(text):
+    """Generate 5 tags for this content: {text}"""
+
+
+# All of these functions will handle errors gracefully:
+# - RateLimitError
+# - InternalServerError
+# - APIError
+# - Timeout
+
+generate_summary("Long article text here...")  # Will retry up to 3 times
+generate_headline("Breaking news story...")    # Will retry up to 5 times
+generate_tags("Product description...")        # No retries, will fail immediately
 ```
+
+The retry mechanism uses the [stamina](https://github.com/hynek/stamina) package under the hood for reliable error handling with exponential backoff. The default retry policy is set to 3 attempts with exponential backoff, but you can customize this behavior by passing a custom `stamina` policy to the `retry` parameter.
 
 ### Memory and State Management
 
