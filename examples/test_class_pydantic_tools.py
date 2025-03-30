@@ -23,6 +23,10 @@ class TravelAssistant:
         self.model = model
         self.request_count = 0
     
+    # Add hello method for testing class method access
+    async def hello(self, name: str):
+        return f"Hello, {name}!"
+    
     # Test class method with Pydantic return type and tools, with only self parameter
     @llm(model="gpt-3.5-turbo")
     async def get_random_city_weather(self) -> WeatherInfo:
@@ -99,13 +103,13 @@ class TravelAssistant:
         print(f"LLM result type: {type(_result)}")
         return _result  # Return the parsed Pydantic model
 
-
     @get_city_recommendation.tool
     async def fetch_weather(self, city: str):
         """
         Fetches weather data for a city
         """
         print(f"Fetching weather for {city}...")
+        print(await self.hello("world")) # Test calling another class method
         await asyncio.sleep(0.5)  # Simulate API call
         return f"Sunny and 75°F in {city}"
 

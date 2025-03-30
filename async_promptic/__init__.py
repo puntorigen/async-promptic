@@ -360,17 +360,28 @@ class Promptic:
 
     def tool(self, fn: Callable) -> Callable:
         """Register a function as a tool that can be used by the LLM"""
-        self.tools[fn.__name__] = fn
+        # Store the function in the tools dictionary with its metadata
+        # Store as a tuple (fn, is_class_method) to track if it's a class method
+        is_class_method = inspect.ismethod(fn) or (hasattr(fn, "__qualname__") and "." in fn.__qualname__)
+        self.tools[fn.__name__] = (fn, is_class_method)
         return fn
 
     def _generate_tool_definition(self, fn: Callable) -> dict:
         """Generate a tool definition from a function's metadata"""
+        # If fn is a tuple (fn, is_class_method), extract just the function
+        if isinstance(fn, tuple):
+            fn = fn[0]
+            
         sig = inspect.signature(fn)
         doc = dedent(fn.__doc__ or "")
 
         parameters = {"type": "object", "properties": {}, "required": []}
 
         for name, param in sig.parameters.items():
+            # Skip 'self' parameter if present in class methods
+            if name == 'self':
+                continue
+                
             param_type = param.annotation if param.annotation != inspect._empty else Any
             param_default = None if param.default == inspect._empty else param.default
 
@@ -763,6 +774,13 @@ class Promptic:
                                 for tool_call in tool_calls:
                                     function_name = tool_call.function.name
                                     if function_name in self.tools:
+                                        fn_info = self.tools[function_name]
+                                        # Check if fn_info is a tuple (new format) or just a function (old format)
+                                        if isinstance(fn_info, tuple):
+                                            fn, is_class_method = fn_info
+                                        else:
+                                            fn, is_class_method = fn_info, False
+                                        
                                         function_args = json.loads(tool_call.function.arguments)
                                         if self.gemini and "llm_invocation" in function_args:
                                             function_args.pop("llm_invocation")
@@ -776,15 +794,23 @@ class Promptic:
                                                 self.logger.debug(
                                                     f"Calling tool {function_name}({function_args}) using {self.model = }"
                                                 )
-                                                fn = self.tools[function_name]
                                                 function_args = self._deserialize_pydantic_args(
                                                     fn, function_args
                                                 )
-                                                # Handle both async and sync tools
-                                                if inspect.iscoroutinefunction(fn):
-                                                    function_response = await fn(**function_args)
+                                                
+                                                # Store the instance reference for class methods in tool execution
+                                                if is_class_method and instance is not None:
+                                                    # Handle both async and sync tools for class methods
+                                                    if inspect.iscoroutinefunction(fn):
+                                                        function_response = await fn(instance, **function_args)
+                                                    else:
+                                                        function_response = fn(instance, **function_args)
                                                 else:
-                                                    function_response = fn(**function_args)
+                                                    # Handle both async and sync tools for regular functions
+                                                    if inspect.iscoroutinefunction(fn):
+                                                        function_response = await fn(**function_args)
+                                                    else:
+                                                        function_response = fn(**function_args)
                                             except Exception as e:
                                                 self.logger.error(
                                                     f"Error calling tool {function_name}({function_args}): {e}"
@@ -1089,6 +1115,13 @@ class Promptic:
                                 for tool_call in tool_calls:
                                     function_name = tool_call.function.name
                                     if function_name in self.tools:
+                                        fn_info = self.tools[function_name]
+                                        # Check if fn_info is a tuple (new format) or just a function (old format)
+                                        if isinstance(fn_info, tuple):
+                                            fn, is_class_method = fn_info
+                                        else:
+                                            fn, is_class_method = fn_info, False
+                                        
                                         function_args = json.loads(tool_call.function.arguments)
                                         if self.gemini and "llm_invocation" in function_args:
                                             function_args.pop("llm_invocation")
@@ -1102,17 +1135,27 @@ class Promptic:
                                                 self.logger.debug(
                                                     f"Calling tool {function_name}({function_args}) using {self.model = }"
                                                 )
-                                                fn = self.tools[function_name]
                                                 function_args = self._deserialize_pydantic_args(
                                                     fn, function_args
                                                 )
-                                                # If the tool function is async, we can't call it from a sync context
-                                                if inspect.iscoroutinefunction(fn):
-                                                    raise ValueError(
-                                                        f"Cannot call async tool function {function_name} from sync context. "
-                                                        f"Either make the decorated function async or make the tool function sync."
-                                                    )
-                                                function_response = fn(**function_args)
+                                                
+                                                # Store the instance reference for class methods in tool execution
+                                                if is_class_method and instance is not None:
+                                                    # Handle both async and sync tools for class methods
+                                                    if inspect.iscoroutinefunction(fn):
+                                                        raise ValueError(
+                                                            f"Cannot call async tool function {function_name} from sync context. "
+                                                            f"Either make the decorated function async or make the tool function sync."
+                                                        )
+                                                    function_response = fn(instance, **function_args)
+                                                else:
+                                                    # Handle both async and sync tools for regular functions
+                                                    if inspect.iscoroutinefunction(fn):
+                                                        raise ValueError(
+                                                            f"Cannot call async tool function {function_name} from sync context. "
+                                                            f"Either make the decorated function async or make the tool function sync."
+                                                        )
+                                                    function_response = fn(**function_args)
                                             except Exception as e:
                                                 self.logger.error(
                                                     f"Error calling tool {function_name}({function_args}): {e}"
@@ -1264,27 +1307,34 @@ class Promptic:
                                         function_args.pop("llm_invocation")
 
                                     if tool_info["name"] in self.tools:
-                                        if self.dry_run:
-                                            self.logger.warning(
-                                                f"[DRY RUN] Would have called {tool_info['name']} with {function_args}"
-                                            )
+                                        fn_info = self.tools[tool_info["name"]]
+                                        # Check if fn_info is a tuple (new format) or just a function (old format)
+                                        if isinstance(fn_info, tuple):
+                                            fn, is_class_method = fn_info
                                         else:
-                                            self.logger.debug(
-                                                f"Calling tool {tool_info['name']}({function_args}) using {self.model = }"
-                                            )
-                                            fn = self.tools[tool_info["name"]]
-                                            function_args = self._deserialize_pydantic_args(
-                                                fn, function_args
-                                            )
-                                            # Handle both async and sync tools
+                                            fn, is_class_method = fn_info, False
+                                        
+                                        function_args = self._deserialize_pydantic_args(
+                                            fn, function_args
+                                        )
+                                        
+                                        # Store the instance reference for class methods in tool execution
+                                        if is_class_method and instance is not None:
+                                            # Handle both async and sync tools for class methods
+                                            if inspect.iscoroutinefunction(fn):
+                                                raise ValueError(
+                                                    f"Cannot call async tool function {tool_info['name']} from sync context. "
+                                                    f"Either make the decorated function async or make the tool function sync."
+                                                )
+                                            function_response = fn(instance, **function_args)
+                                        else:
+                                            # Handle both async and sync tools for regular functions
                                             if inspect.iscoroutinefunction(fn):
                                                 raise ValueError(
                                                     f"Cannot call async tool function {tool_info['name']} from sync context. "
                                                     f"Either make the decorated function async or make the tool function sync."
                                                 )
                                             function_response = fn(**function_args)
-                                        # Clear after successful execution
-                                        del current_tool_calls[current_index]
                                 except json.JSONDecodeError:
                                     # Arguments not complete yet, continue accumulating
                                     continue
@@ -1357,25 +1407,30 @@ class Promptic:
                                         function_args.pop("llm_invocation")
 
                                     if tool_info["name"] in self.tools:
-                                        if self.dry_run:
-                                            self.logger.warning(
-                                                f"[DRY RUN] Would have called {tool_info['name']} with {function_args}"
-                                            )
+                                        fn_info = self.tools[tool_info["name"]]
+                                        # Check if fn_info is a tuple (new format) or just a function (old format)
+                                        if isinstance(fn_info, tuple):
+                                            fn, is_class_method = fn_info
                                         else:
-                                            self.logger.debug(
-                                                f"Calling tool {tool_info['name']}({function_args}) using {self.model = }"
-                                            )
-                                            fn = self.tools[tool_info["name"]]
-                                            function_args = self._deserialize_pydantic_args(
-                                                fn, function_args
-                                            )
-                                            # Handle both async and sync tools
+                                            fn, is_class_method = fn_info, False
+                                        
+                                        function_args = self._deserialize_pydantic_args(
+                                            fn, function_args
+                                        )
+                                        
+                                        # Store the instance reference for class methods in tool execution
+                                        if is_class_method and instance is not None:
+                                            # Handle both async and sync tools for class methods
                                             if inspect.iscoroutinefunction(fn):
-                                                await fn(**function_args)
+                                                function_response = await fn(instance, **function_args)
                                             else:
-                                                fn(**function_args)
-                                        # Clear after successful execution
-                                        del current_tool_calls[current_index]
+                                                function_response = fn(instance, **function_args)
+                                        else:
+                                            # Handle both async and sync tools for regular functions
+                                            if inspect.iscoroutinefunction(fn):
+                                                function_response = await fn(**function_args)
+                                            else:
+                                                function_response = fn(**function_args)
                                 except json.JSONDecodeError:
                                     # Arguments not complete yet, continue accumulating
                                     continue
