@@ -22,7 +22,7 @@ from stamina import retry
 from litellm.exceptions import RateLimitError, InternalServerError, APIError, Timeout
 from fix_busted_json import repair_json
 
-__version__ = "5.4.6"
+__version__ = "5.4.7"
 
 SystemPrompt = Optional[Union[str, List[str], List[Dict[str, str]]]]
 
