@@ -20,6 +20,7 @@ from litellm import acompletion as litellm_acompletion
 from pydantic import BaseModel
 from stamina import retry
 from litellm.exceptions import RateLimitError, InternalServerError, APIError, Timeout
+from fix_busted_json import repair_json
 
 __version__ = "5.4.6"
 
@@ -57,7 +58,6 @@ class State:
         """Clear all messages from memory"""
         self._messages = []
 
-
 class Promptic:
     def __init__(
         self,
@@ -72,6 +72,7 @@ class Promptic:
         create_completion_fn=None,
         openai_client=None,
         weave_client=None,
+        tool_timeout: int = 120,
         **completion_kwargs,
     ):
         """Initialize a new Promptic instance.
@@ -89,6 +90,7 @@ class Promptic:
             openai_client (OpenAI, optional): The OpenAI client to use for API calls. Defaults to None.
             create_completion_fn (Callable, optional): The function to use for API calls. Defaults to None.
             weave_client (WeaveClient, optional): The Weights & Biases client used to trace calls. Defaults to None.
+            tool_timeout (int, optional): Timeout in seconds for tool execution. Defaults to 120.
             **client_kwargs: Additional keyword arguments passed to the create_completion_fn.
         """
         assert not (openai_client and create_completion_fn), (
@@ -100,6 +102,8 @@ class Promptic:
         self.dry_run = dry_run
         self.completion_kwargs = completion_kwargs
         self.tools: Dict[str, Callable] = {}
+        self.tool_timeouts: Dict[str, int] = {}
+        self.tool_timeout = tool_timeout
         self.json_schema = json_schema
         self.openai_client = openai_client
         self.weave_client = weave_client
@@ -358,13 +362,30 @@ class Promptic:
     def __call__(self, fn=None):
         return self._decorator(fn) if fn else self._decorator
 
-    def tool(self, fn: Callable) -> Callable:
-        """Register a function as a tool that can be used by the LLM"""
-        # Store the function in the tools dictionary with its metadata
-        # Store as a tuple (fn, is_class_method) to track if it's a class method
-        is_class_method = inspect.ismethod(fn) or (hasattr(fn, "__qualname__") and "." in fn.__qualname__)
-        self.tools[fn.__name__] = (fn, is_class_method)
-        return fn
+    def tool(self, fn: Callable = None, timeout: int = None) -> Callable:
+        """Register a function as a tool that can be used by the LLM
+        
+        Args:
+            fn (Callable, optional): Function to register as a tool. Defaults to None.
+            timeout (int, optional): Timeout in seconds for tool execution. 
+                If not specified, uses the global tool_timeout setting. Defaults to None.
+        """
+        def decorator(fn):
+            # Store the function in the tools dictionary with its metadata
+            # Store as a tuple (fn, is_class_method) to track if it's a class method
+            is_class_method = inspect.ismethod(fn) or (hasattr(fn, "__qualname__") and "." in fn.__qualname__)
+            self.tools[fn.__name__] = (fn, is_class_method)
+            
+            # Store the timeout for this tool if specified
+            if timeout is not None:
+                self.tool_timeouts[fn.__name__] = timeout
+                
+            return fn
+            
+        # Handle both @tool and @tool() decorators
+        if fn is None:
+            return decorator
+        return decorator(fn)
 
     def _generate_tool_definition(self, fn: Callable) -> dict:
         """Generate a tool definition from a function's metadata"""
@@ -424,6 +445,7 @@ class Promptic:
 
         # Handle Pydantic model return types
         if return_type and issubclass(return_type, BaseModel):
+            generated_text = repair_json(generated_text)
             match = self.result_regex.search(generated_text)
             if match:
                 json_result = match.group(1)
@@ -436,6 +458,7 @@ class Promptic:
 
         # Handle json_schema if provided
         elif json_schema:
+            generated_text = repair_json(generated_text)
             match = self.result_regex.search(generated_text)
             if not match:
                 raise ValueError(
@@ -484,6 +507,7 @@ class Promptic:
             retry (bool or int, optional): If True, enables retry with default settings.
                 If an integer, specifies the number of retry attempts.
                 If False, disables retry functionality. Defaults to True.
+            tool_timeout (int, optional): Default timeout in seconds for all tools. Defaults to 120.
             **kwargs: Additional arguments passed to Promptic.
         
         Returns:
@@ -502,6 +526,10 @@ class Promptic:
             new_instance.retry_max_attempts = retry_setting
         else:
             new_instance.retry_max_attempts = 3  # Default to 3 attempts
+            
+        # Set tool timeout if provided
+        if 'tool_timeout' in kwargs:
+            new_instance.tool_timeout = kwargs.pop('tool_timeout')
 
         for key, value in kwargs.items():
             setattr(new_instance, key, value)
@@ -801,16 +829,64 @@ class Promptic:
                                                 # Store the instance reference for class methods in tool execution
                                                 if is_class_method and instance is not None:
                                                     # Handle both async and sync tools for class methods
+                                                    tool_timeout = self.tool_timeouts.get(function_name, self.tool_timeout)
+                                                    
                                                     if inspect.iscoroutinefunction(fn):
-                                                        function_response = await fn(instance, **function_args)
+                                                        try:
+                                                            function_response = await asyncio.wait_for(
+                                                                fn(instance, **function_args), 
+                                                                timeout=tool_timeout
+                                                            )
+                                                        except asyncio.TimeoutError:
+                                                            self.logger.error(
+                                                                f"Tool {function_name} timed out after {tool_timeout} seconds"
+                                                            )
+                                                            function_response = f"Error: Tool {function_name} timed out after {tool_timeout} seconds"
                                                     else:
-                                                        function_response = fn(instance, **function_args)
+                                                        # For synchronous functions, we need to run in a thread to apply timeout
+                                                        loop = asyncio.get_event_loop()
+                                                        try:
+                                                            function_response = await asyncio.wait_for(
+                                                                loop.run_in_executor(
+                                                                    None, lambda: fn(instance, **function_args)
+                                                                ),
+                                                                timeout=tool_timeout
+                                                            )
+                                                        except asyncio.TimeoutError:
+                                                            self.logger.error(
+                                                                f"Tool {function_name} timed out after {tool_timeout} seconds"
+                                                            )
+                                                            function_response = f"Error: Tool {function_name} timed out after {tool_timeout} seconds"
                                                 else:
                                                     # Handle both async and sync tools for regular functions
+                                                    tool_timeout = self.tool_timeouts.get(function_name, self.tool_timeout)
+                                                    
                                                     if inspect.iscoroutinefunction(fn):
-                                                        function_response = await fn(**function_args)
+                                                        try:
+                                                            function_response = await asyncio.wait_for(
+                                                                fn(**function_args), 
+                                                                timeout=tool_timeout
+                                                            )
+                                                        except asyncio.TimeoutError:
+                                                            self.logger.error(
+                                                                f"Tool {function_name} timed out after {tool_timeout} seconds"
+                                                            )
+                                                            function_response = f"Error: Tool {function_name} timed out after {tool_timeout} seconds"
                                                     else:
-                                                        function_response = fn(**function_args)
+                                                        # For synchronous functions, we need to run in a thread to apply timeout
+                                                        loop = asyncio.get_event_loop()
+                                                        try:
+                                                            function_response = await asyncio.wait_for(
+                                                                loop.run_in_executor(
+                                                                    None, lambda: fn(**function_args)
+                                                                ),
+                                                                timeout=tool_timeout
+                                                            )
+                                                        except asyncio.TimeoutError:
+                                                            self.logger.error(
+                                                                f"Tool {function_name} timed out after {tool_timeout} seconds"
+                                                            )
+                                                            function_response = f"Error: Tool {function_name} timed out after {tool_timeout} seconds"
                                             except Exception as e:
                                                 self.logger.error(
                                                     f"Error calling tool {function_name}({function_args}): {e}"
@@ -836,7 +912,7 @@ class Promptic:
                                     # Process the final response from the LLM after tools have been used
                                     generated_text = response.choices[0].message.content
                                     result = self._parse_and_validate_response(
-                                        generated_text,
+                                        generated_text=generated_text,
                                         return_type=return_type,
                                         json_schema=self.json_schema,
                                     )
@@ -871,7 +947,7 @@ class Promptic:
                             elif choice.finish_reason in ["stop", "max_tokens", "length"]:
                                 generated_text = choice.message.content
                                 result = self._parse_and_validate_response(
-                                    generated_text,
+                                    generated_text=generated_text,
                                     return_type=return_type,
                                     json_schema=self.json_schema,
                                 )
@@ -1142,6 +1218,8 @@ class Promptic:
                                                 # Store the instance reference for class methods in tool execution
                                                 if is_class_method and instance is not None:
                                                     # Handle both async and sync tools for class methods
+                                                    tool_timeout = self.tool_timeouts.get(function_name, self.tool_timeout)
+                                                    
                                                     if inspect.iscoroutinefunction(fn):
                                                         raise ValueError(
                                                             f"Cannot call async tool function {function_name} from sync context. "
@@ -1150,6 +1228,8 @@ class Promptic:
                                                     function_response = fn(instance, **function_args)
                                                 else:
                                                     # Handle both async and sync tools for regular functions
+                                                    tool_timeout = self.tool_timeouts.get(function_name, self.tool_timeout)
+                                                    
                                                     if inspect.iscoroutinefunction(fn):
                                                         raise ValueError(
                                                             f"Cannot call async tool function {function_name} from sync context. "
@@ -1181,7 +1261,7 @@ class Promptic:
                                     # Process the final response from the LLM after tools have been used
                                     generated_text = response.choices[0].message.content
                                     result = self._parse_and_validate_response(
-                                        generated_text,
+                                        generated_text=generated_text,
                                         return_type=return_type,
                                         json_schema=self.json_schema,
                                     )

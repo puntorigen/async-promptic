@@ -19,8 +19,9 @@ class CityInfo(BaseModel):
 class TravelAssistant:
     """A class that demonstrates using @llm decorator with class methods and Pydantic models"""
     
-    def __init__(self, model="gpt-3.5-turbo"):
+    def __init__(self, model="gpt-3.5-turbo", request_timeout=120):
         self.model = model
+        self.request_timeout = request_timeout
         self.request_count = 0
     
     # Add hello method for testing class method access
@@ -28,7 +29,7 @@ class TravelAssistant:
         return f"Hello, {name}!"
     
     # Test class method with Pydantic return type and tools, with only self parameter
-    @llm(model="gpt-3.5-turbo")
+    @llm(model="gpt-3.5-turbo", request_timeout=120)
     async def get_random_city_weather(self) -> WeatherInfo:
         """
         You are a travel assistant.
@@ -51,7 +52,7 @@ class TravelAssistant:
         return f"Sunny and 75°F in {city}"
     
     # Test class method with Pydantic return type and tools, with additional params
-    @llm(model="gpt-3.5-turbo")
+    @llm(model="gpt-3.5-turbo", request_timeout=120)
     async def get_city_weather(self, city: str) -> WeatherInfo:
         """
         You are a travel assistant.
@@ -89,7 +90,7 @@ class TravelAssistant:
         return f"Sunny and 75°F in {city}"
     
     # Test class method with Pydantic return type and _result parameter
-    @llm(model="gpt-3.5-turbo")
+    @llm(model="gpt-3.5-turbo", tool_timeout=30, request_timeout=120)
     async def get_city_recommendation(self, preferences: str, _result: Optional[WeatherInfo] = None) -> WeatherInfo:
         """
         You are a travel assistant.
@@ -103,19 +104,41 @@ class TravelAssistant:
         print(f"LLM result type: {type(_result)}")
         return _result  # Return the parsed Pydantic model
 
-    @get_city_recommendation.tool
+    @get_city_recommendation.tool(timeout=15)
     async def fetch_weather(self, city: str):
         """
         Fetches weather data for a city
         """
         print(f"Fetching weather for {city}...")
         print(await self.hello("world")) # Test calling another class method
-        await asyncio.sleep(0.5)  # Simulate API call
+        await asyncio.sleep(10)  # Simulate a long API call (10 seconds)
         return f"Sunny and 75°F in {city}"
+
+    # Test class method with tool that exceeds timeout
+    @llm(model="gpt-3.5-turbo", request_timeout=120)
+    async def get_travel_tips(self, city: str) -> str:
+        """
+        You are a travel assistant.
+        Provide travel tips for {city}.
+        Use the fetch_city_details tool to get detailed information.
+        """
+        self.request_count += 1
+        print(f"Processing travel tips request #{self.request_count} for {city}")
+        # This uses the default timeout
+    
+    @get_travel_tips.tool
+    async def fetch_city_details(self, city: str):
+        """
+        Fetches detailed information about a city
+        """
+        print(f"Fetching detailed info for {city}...")
+        await asyncio.sleep(20)  # This will exceed the default timeout (120s)
+        return f"{city} has beautiful architecture, delicious cuisine, and friendly locals."
 
 
 async def main():
-    assistant = TravelAssistant()
+    # Create the assistant with request_timeout parameter
+    assistant = TravelAssistant(request_timeout=120)
     
     # Test class method with only self parameter
     print("\n=== Testing class method with only self parameter ===")
@@ -135,14 +158,22 @@ async def main():
     except Exception as e:
         print(f"Error with city weather: {e}")
     
-    # Test class method with _result parameter
-    print("\n=== Testing class method with _result parameter ===")
+    # Test class method with _result parameter and tool timeout
+    print("\n=== Testing class method with _result parameter and 15-second tool timeout ===")
     try:
         recommendation = await assistant.get_city_recommendation("I enjoy warm weather and beaches")
         print(f"Type: {type(recommendation)}")
         print(f"Recommendation: {recommendation}")
     except Exception as e:
         print(f"Error with recommendation: {e}")
+        
+    # Test tool that would exceed default timeout (but we've set it to 30 seconds)
+    print("\n=== Testing travel tips with longer default timeout ===")
+    try:
+        tips = await assistant.get_travel_tips("Barcelona")
+        print(f"Travel tips: {tips}")
+    except Exception as e:
+        print(f"Error with travel tips: {e}")
 
 
 if __name__ == "__main__":
