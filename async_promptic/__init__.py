@@ -21,8 +21,9 @@ from pydantic import BaseModel
 from stamina import retry
 from litellm.exceptions import RateLimitError, InternalServerError, APIError, Timeout
 from fix_busted_json import repair_json, is_json
+from json_repair import repair_json as repair_json2
 
-__version__ = "5.4.9"
+__version__ = "5.5.0"
 
 SystemPrompt = Optional[Union[str, List[str], List[Dict[str, str]]]]
 
@@ -452,7 +453,11 @@ class Promptic:
                     self.state.add_message(
                         {"content": json_result, "role": "assistant"}
                     )
-                return return_type.model_validate(json.loads(repair_json(json_result)))
+                try:
+                    return return_type.model_validate(json.loads(repair_json(json_result)))
+                except Exception as e:
+                    return return_type.model_validate(json.loads(repair_json2(json_result)))
+
             raise ValueError("Failed to extract JSON result from the generated text.")
 
         # Handle json_schema if provided
@@ -465,7 +470,10 @@ class Promptic:
 
             try:
                 json_result = match.group(1)
-                parsed_result = json.loads(repair_json(json_result))
+                try:
+                    parsed_result = json.loads(repair_json(json_result))
+                except Exception as e:
+                    parsed_result = json.loads(repair_json2(json_result))
                 # Validate against the schema
                 validate_json_schema(instance=parsed_result, schema=self.json_schema)
                 if self.state:

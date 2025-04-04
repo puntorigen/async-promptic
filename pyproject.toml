@@ -17,13 +17,14 @@ classifiers = [
 description = "90% of what you need for LLM app development. Nothing you don't."
 license = {file = "LICENSE"}
 name = "async-promptic"
-version = "5.4.9"
+version = "5.5.0"
 dependencies = [
   "jsonschema>=4.23.0",
   "litellm~=1.38",
   "pydantic~=2.7",
   "fix-busted-json>=0.0.18",
   "stamina>=25.1.0",
+  "json-repair>=0.40.0"
 ]
 readme = "README.md"
 requires-python = ">=3.11"
@@ -41,6 +42,7 @@ dev-dependencies = [
     "openai>=1.58.1",
     "fix-busted-json>=0.0.18",
     "stamina>=25.1.0",
+    "json-repair>=0.40.0"
 ]
 
 [tool.pytest.ini_options]
