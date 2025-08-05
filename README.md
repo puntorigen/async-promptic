@@ -5,18 +5,20 @@
 
 ### 90% of what you need for LLM app development. Nothing you don't.
 
-Async-Promptic is a fork of [Promptic](https://github.com/puntorigen/promptic) that adds full async support. It aims to be the "[requests](https://requests.readthedocs.io/en/latest/)" of LLM development -- the most productive and pythonic way to build LLM applications. It leverages [LiteLLM][litellm], so you're never locked in to an LLM provider and can switch to the latest and greatest with a single line of code. Async-Promptic gets out of your way so you can focus entirely on building features.
+It aims to be the "[requests](https://requests.readthedocs.io/en/latest/)" of LLM development -- the most productive and pythonic way to build LLM applications. It leverages [LiteLLM][litellm], so you're never locked in to an LLM provider and can switch to the latest and greatest with a single line of code. Async-Promptic gets out of your way so you can focus entirely on building features.
 
 > "Perfection is attained, not when there is nothing more to add, but when there is nothing more to take away."
 
 ### At a glance
 
-- 🎯 Type-safe structured outputs with Pydantic
-- 🤖 Easy-to-build agents with function calling
-- 🔄 Streaming support for real-time responses
-- 📚 Automatic prompt caching for supported models
-- 💾 Built-in conversation memory
-- ⚡ **Full async/await support for modern Python applications**
+- 🎯 **Type-safe structured outputs** with Pydantic models and dynamic schema switching
+- 🏗️ **Class method support** for organizing prompts and building complex LLM-powered applications
+- 🔄 **Dynamic schema control** with runtime `setSchema()` and `extend_enum()` helpers
+- 🤖 **Easy-to-build agents** with function calling and tool integration
+- 📡 **Streaming support** for real-time responses
+- 📚 **Automatic prompt caching** for supported models
+- 💾 **Built-in conversation memory** with state management
+- ⚡ **Full async/await support** for modern Python applications
 
 ## Installation
 
@@ -274,6 +276,84 @@ print(get_weather("San Francisco", units="celsius"))
 # location='San Francisco' temperature=16.0 units='Celsius'
 
 ```
+
+#### Dynamic Pydantic Schemas
+
+For maximum flexibility, you can dynamically set Pydantic schemas at runtime using the `.setSchema()` method. This is perfect when you need to change the output structure based on different contexts or user requirements.
+
+```py
+# examples/dynamic_schema.py
+
+from pydantic import BaseModel, Field, create_model
+from async_promptic import llm
+
+
+@llm
+def analyze_data(data):
+    """Analyze the provided data and return structured results"""
+
+
+# Create dynamic schema for weather analysis
+WeatherSchema = create_model(
+    'WeatherAnalysis',
+    temperature=(float, Field(..., description="Temperature in Celsius")),
+    conditions=(str, Field(..., description="Weather conditions like sunny, rainy, etc.")),
+    humidity=(int, Field(..., ge=0, le=100, description="Humidity percentage"))
+)
+
+analyze_data.setSchema(WeatherSchema)
+result = analyze_data("It's a sunny day, 25°C with 60% humidity")
+print(result)
+# WeatherAnalysis(temperature=25.0, conditions='sunny', humidity=60)
+
+
+# Switch to financial analysis schema dynamically
+FinancialSchema = create_model(
+    'FinancialAnalysis',
+    stock_symbol=(str, Field(..., description="Stock ticker symbol")),
+    price=(float, Field(..., gt=0, description="Current stock price")),
+    trend=(str, Field(..., description="Price trend: up, down, or stable"))
+)
+
+analyze_data.setSchema(FinancialSchema)
+result = analyze_data("AAPL is trading at $175.50, up 2.3% today")
+print(result)
+# FinancialAnalysis(stock_symbol='AAPL', price=175.5, trend='up')
+```
+
+#### Extending Enums with `extend_enum`
+
+When working with dynamic schemas, you can easily extend existing enums using the built-in `extend_enum` helper:
+
+```py
+from enum import Enum
+from async_promptic import llm, extend_enum
+
+# Original enum
+class Priority(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    CRITICAL = "critical"
+
+# Extend it with new values
+ExtendedPriority = extend_enum(Priority, EMERGENCY="emergency", MAINTENANCE="maintenance")
+
+# Use in dynamic schema
+TaskSchema = create_model(
+    'TaskAnalysis',
+    title=(str, Field(..., description="Task title")),
+    priority=(ExtendedPriority, Field(..., description="Priority: low, medium, high, critical, emergency, or maintenance")),
+    category=(str, Field(..., description="Task category"))
+)
+
+analyze_data.setSchema(TaskSchema)
+result = analyze_data("Fix the critical payment bug immediately")
+print(result)
+# TaskAnalysis(title='Fix payment bug', priority=<ExtendedPriority.EMERGENCY: 'emergency'>, category='bug_fix')
+```
+
+The `setSchema()` method is available on all `@llm` decorated functions and takes precedence over static return type annotations, giving you full control over output structure at runtime.
 
 Alternatively, you can use JSON Schema dictionaries for more low-level validation:
 

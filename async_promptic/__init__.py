@@ -12,6 +12,7 @@ from functools import wraps
 from textwrap import dedent
 from typing import Any, Callable, Dict, List, Optional, Union
 import asyncio
+from enum import Enum
 
 import litellm
 from jsonschema import validate as validate_json_schema
@@ -23,7 +24,50 @@ from litellm.exceptions import RateLimitError, InternalServerError, APIError, Ti
 from fix_busted_json import repair_json, is_json
 from json_repair import repair_json as repair_json2
 
-__version__ = "5.5.0"
+__version__ = "5.5.1"
+
+
+def extend_enum(base_enum: type[Enum], **new_members) -> type[Enum]:
+    """
+    Extend an existing Enum with new members.
+    
+    Args:
+        base_enum: The original Enum class to extend
+        **new_members: New enum members as keyword arguments (name=value)
+    
+    Returns:
+        A new Enum class with all original members plus the new ones
+        
+    Example:
+        class Priority(str, Enum):
+            LOW = "low"
+            HIGH = "high"
+            
+        ExtendedPriority = extend_enum(Priority, EMERGENCY="emergency", MAINTENANCE="maintenance")
+        # ExtendedPriority now has: LOW, HIGH, EMERGENCY, MAINTENANCE
+    """
+    if not (inspect.isclass(base_enum) and issubclass(base_enum, Enum)):
+        raise ValueError("base_enum must be an Enum class")
+    
+    # Get existing members
+    existing_members = {member.name: member.value for member in base_enum}
+    
+    # Combine with new members (convert keys to uppercase for consistency)
+    all_members = {**existing_members, **{k.upper(): v for k, v in new_members.items()}}
+    
+    # Determine the enum type (str, int, etc.) from the base enum
+    enum_bases = [cls for cls in base_enum.__mro__ if cls != Enum and cls != object]
+    if enum_bases:
+        enum_type = enum_bases[0]  # First non-Enum base class (e.g., str, int)
+    else:
+        enum_type = None
+    
+    # Create new enum with same type
+    if enum_type:
+        return Enum(f'Extended{base_enum.__name__}', all_members, type=enum_type)
+    else:
+        return Enum(f'Extended{base_enum.__name__}', all_members)
+
 
 SystemPrompt = Optional[Union[str, List[str], List[Dict[str, str]]]]
 
@@ -440,9 +484,25 @@ class Promptic:
         }
 
     def _parse_and_validate_response(
-        self, generated_text: str, return_type=None, json_schema=None
+        self, generated_text: str, return_type=None, json_schema=None, dynamic_schema=None
     ):
         """Parse and validate the response according to the return type"""
+
+        # Handle dynamic Pydantic model (highest priority)
+        if dynamic_schema and inspect.isclass(dynamic_schema) and issubclass(dynamic_schema, BaseModel):
+            match = self.result_regex.search(generated_text)
+            if match:
+                json_result = match.group(1)
+                if self.state:
+                    self.state.add_message(
+                        {"content": json_result, "role": "assistant"}
+                    )
+                try:
+                    return dynamic_schema.model_validate(json.loads(repair_json(json_result)))
+                except Exception as e:
+                    return dynamic_schema.model_validate(json.loads(repair_json2(json_result)))
+
+            raise ValueError("Failed to extract JSON result from the generated text.")
 
         # Handle Pydantic model return types
         if return_type and issubclass(return_type, BaseModel):
@@ -921,6 +981,7 @@ class Promptic:
                                         generated_text=generated_text,
                                         return_type=return_type,
                                         json_schema=self.json_schema,
+                                        dynamic_schema=getattr(wrapper, '_dynamic_schema', None),
                                     )
 
                                     if call and self.weave_client:
@@ -991,6 +1052,17 @@ class Promptic:
             async_wrapper.clear = self.clear
             async_wrapper.message = self.message
             async_wrapper.instance = self
+            
+            # Always add dynamic schema support
+            async_wrapper._dynamic_schema = None
+            
+            def setSchema(schema_model: type[BaseModel]):
+                """Set the dynamic Pydantic schema for this function"""
+                if not (inspect.isclass(schema_model) and issubclass(schema_model, BaseModel)):
+                    raise ValueError("schema_model must be a Pydantic BaseModel class")
+                async_wrapper._dynamic_schema = schema_model
+            
+            async_wrapper.setSchema = setSchema
 
             # Automatically expose all other attributes from self
             for attr_name, attr_value in self.__dict__.items():
@@ -1270,6 +1342,7 @@ class Promptic:
                                         generated_text=generated_text,
                                         return_type=return_type,
                                         json_schema=self.json_schema,
+                                        dynamic_schema=getattr(wrapper, '_dynamic_schema', None),
                                     )
 
                                     if call and self.weave_client:
@@ -1305,6 +1378,7 @@ class Promptic:
                                     generated_text,
                                     return_type=return_type,
                                     json_schema=self.json_schema,
+                                    dynamic_schema=getattr(async_wrapper, '_dynamic_schema', None),
                                 )
 
                                 if call and self.weave_client:
@@ -1340,6 +1414,17 @@ class Promptic:
             wrapper.clear = self.clear
             wrapper.message = self.message
             wrapper.instance = self
+            
+            # Always add dynamic schema support
+            wrapper._dynamic_schema = None
+            
+            def setSchema(schema_model: type[BaseModel]):
+                """Set the dynamic Pydantic schema for this function"""
+                if not (inspect.isclass(schema_model) and issubclass(schema_model, BaseModel)):
+                    raise ValueError("schema_model must be a Pydantic BaseModel class")
+                wrapper._dynamic_schema = schema_model
+            
+            wrapper.setSchema = setSchema
 
             # Automatically expose all other attributes from self
             for attr_name, attr_value in self.__dict__.items():

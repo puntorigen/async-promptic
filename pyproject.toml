@@ -4,7 +4,6 @@ requires = ["flit_core >=3.2,<4"]
 
 [project]
 authors = [
-  {name = "Stephan Fitzpatrick", email = "stephan@knowsuchagency.com"},
   {name = "Pablo Schaffner", email = "pablo@puntorigen.com"}
 ]
 classifiers = [
@@ -17,7 +16,7 @@ classifiers = [
 description = "90% of what you need for LLM app development. Nothing you don't."
 license = {file = "LICENSE"}
 name = "async-promptic"
-version = "5.5.0"
+version = "5.5.1"
 dependencies = [
   "jsonschema>=4.23.0",
   "litellm~=1.38",
