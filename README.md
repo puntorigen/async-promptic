@@ -290,7 +290,7 @@ from async_promptic import llm
 
 @llm
 def analyze_data(data):
-    """Analyze the provided data and return structured results"""
+    """Analyze the provided {data} and return structured results"""
 
 
 # Create dynamic schema for weather analysis
