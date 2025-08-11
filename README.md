@@ -614,6 +614,42 @@ generate_tags("Product description...")        # No retries, will fail immediate
 
 The retry mechanism uses the [stamina](https://github.com/hynek/stamina) package under the hood for reliable error handling with exponential backoff. The default retry policy is set to 3 attempts with exponential backoff, but you can customize this behavior by passing a custom `stamina` policy to the `retry` parameter.
 
+### Model Fallback with `with_fallback`
+
+The `with_fallback` decorator provides model fallback capability for LLM methods, allowing you to specify alternative models to try if the primary model fails. This is particularly useful for handling model-specific errors or availability issues.
+
+```py
+# examples/fallback_example.py
+
+from async_promptic import llm, with_fallback
+
+# Use with_fallback to specify fallback models
+@with_fallback(models=['gpt-3.5-turbo', 'claude-3-haiku-20240307'])
+@llm(model='gpt-4', temperature=0.5)
+async def generate_code(language, task):
+    """Generate {language} code to {task}"""
+
+# The function will try models in this order:
+# 1. gpt-4 (from @llm decorator)
+# 2. gpt-3.5-turbo (first fallback)
+# 3. claude-3-haiku-20240307 (second fallback)
+
+# You can also override temperature for all models
+@with_fallback(models=['gpt-3.5-turbo'], temperature=0.7)
+@llm(model='gpt-4')
+def creative_writing(prompt):
+    """Write a creative story based on: {prompt}"""
+
+# Works with class methods too
+class Assistant:
+    @with_fallback(models=['claude-3-sonnet-20240229'])
+    @llm(model='gpt-4-turbo')
+    async def analyze(self, data):
+        """Analyze the following data: {data}"""
+```
+
+The `with_fallback` decorator seamlessly integrates with existing `@llm` decorated functions, attempting each model in sequence until one succeeds. This provides resilience against model-specific failures while maintaining the same function interface.
+
 ### Memory and State Management
 
 By default, each function call is independent and stateless. Setting `memory=True` enables built-in conversation memory, allowing the LLM to maintain context across multiple interactions. Here's a practical example using Gradio to create a web-based chatbot interface:

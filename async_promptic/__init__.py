@@ -24,8 +24,79 @@ from litellm.exceptions import RateLimitError, InternalServerError, APIError, Ti
 from fix_busted_json import repair_json, is_json
 from json_repair import repair_json as repair_json2
 
-__version__ = "5.5.1"
+__version__ = "5.5.2"
 
+def with_fallback(
+    models: Optional[List[str]] = None,
+    temperature: Optional[float] = None
+):
+    '''
+    Decorator that provides model fallback capability for LLM methods.
+    Can be used in conjunction with the @llm decorator.
+    
+    Args:
+        models: List of models to try in order. If None, uses default list
+        temperature: Temperature to use for all models. If None, uses each model's default
+        
+    Example:
+        ```python
+        @with_fallback(models=['model2', 'model3'])
+        @llm(model='model1', temperature=0.5)
+        async def my_llm_method(self, arg1, arg2):
+            """Method docstring"""
+            pass
+        ```
+    '''
+    def decorator(func: Callable):
+        # Get the original llm decorator if it exists
+        original_model = None
+        original_temp = None
+        
+        # Look for the llm decorator in the function's metadata
+        if hasattr(func, '__llm_params__'):
+            original_model = func.__llm_params__.get('model')
+            original_temp = func.__llm_params__.get('temperature')
+        
+        # Set up fallback models list
+        fallback_models = [] if models is None else models.copy()
+        if original_model and original_model not in fallback_models:
+            fallback_models.insert(0, original_model)  # Try original model first
+        elif not fallback_models:
+            fallback_models = [
+                "groq/meta-llama/llama-4-scout-17b-16e-instruct",
+                "groq/meta-llama/llama-4-maverick-17b-128e-instruct",
+                "openai/gpt-4o-mini",
+                "openai/gpt-4o"
+            ]
+        
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            last_error = None
+            
+            for model in fallback_models:
+                try:
+                    # Create a new llm decorator with the current model
+                    model_kwargs = {"model": model}
+                    
+                    # Use temperature in this priority:
+                    # 1. Temperature passed to with_fallback
+                    # 2. Original temperature from @llm
+                    # 3. No temperature (let llm use its default)
+                    if temperature is not None:
+                        model_kwargs["temperature"] = temperature
+                    elif original_temp is not None:
+                        model_kwargs["temperature"] = original_temp
+                    
+                    decorated_func = llm(**model_kwargs)(func)
+                    return await decorated_func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+                    continue
+            
+            raise Exception(f"All models failed. Last error: {str(last_error)}")
+            
+        return wrapper
+    return decorator
 
 def extend_enum(base_enum: type[Enum], **new_members) -> type[Enum]:
     """
