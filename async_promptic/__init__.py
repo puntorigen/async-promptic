@@ -24,6 +24,15 @@ from litellm.exceptions import RateLimitError, InternalServerError, APIError, Ti
 from fix_busted_json import repair_json, is_json
 from json_repair import repair_json as repair_json2
 
+# Import Django support utilities
+from .django_support import (
+    is_django_model,
+    django_model_to_json_schema,
+    create_django_model_instance,
+    get_django_model_instructions,
+    DJANGO_AVAILABLE
+)
+
 __version__ = "5.5.2"
 
 def with_fallback(
@@ -575,6 +584,24 @@ class Promptic:
 
             raise ValueError("Failed to extract JSON result from the generated text.")
 
+        # Handle dynamic Django model
+        if dynamic_schema and is_django_model(dynamic_schema):
+            match = self.result_regex.search(generated_text)
+            if match:
+                json_result = match.group(1)
+                if self.state:
+                    self.state.add_message(
+                        {"content": json_result, "role": "assistant"}
+                    )
+                try:
+                    data = json.loads(repair_json(json_result))
+                except Exception as e:
+                    data = json.loads(repair_json2(json_result))
+                
+                return create_django_model_instance(dynamic_schema, data)
+
+            raise ValueError("Failed to extract JSON result from the generated text.")
+
         # Handle Pydantic model return types
         if return_type and issubclass(return_type, BaseModel):
             match = self.result_regex.search(generated_text)
@@ -588,6 +615,24 @@ class Promptic:
                     return return_type.model_validate(json.loads(repair_json(json_result)))
                 except Exception as e:
                     return return_type.model_validate(json.loads(repair_json2(json_result)))
+
+            raise ValueError("Failed to extract JSON result from the generated text.")
+
+        # Handle Django model return types
+        if return_type and is_django_model(return_type):
+            match = self.result_regex.search(generated_text)
+            if match:
+                json_result = match.group(1)
+                if self.state:
+                    self.state.add_message(
+                        {"content": json_result, "role": "assistant"}
+                    )
+                try:
+                    data = json.loads(repair_json(json_result))
+                except Exception as e:
+                    data = json.loads(repair_json2(json_result))
+                
+                return create_django_model_instance(return_type, data)
 
             raise ValueError("Failed to extract JSON result from the generated text.")
 
@@ -839,11 +884,46 @@ class Promptic:
 
                 # Check if the function has a return type hint of a Pydantic model
                 return_type = func.__annotations__.get("return")
+                
+                # Check for dynamic schema first (takes priority)
+                dynamic_schema = getattr(async_wrapper if 'async_wrapper' in locals() else wrapper, '_dynamic_schema', None)
 
                 self.logger.debug(f"{return_type = }")
+                self.logger.debug(f"{dynamic_schema = }")
 
                 # Add schema instructions before any LLM call if return type requires it
-                if (
+                # Dynamic schema takes priority over return type annotation
+                if dynamic_schema and inspect.isclass(dynamic_schema) and issubclass(dynamic_schema, BaseModel):
+                    schema = dynamic_schema.model_json_schema()
+                    json_schema = json.dumps(schema, indent=2)
+                    msg = {
+                        "role": "user",
+                        "content": (
+                            "Format your response according to this JSON schema:\n"
+                            f"```json\n{json_schema}\n```\n\n"
+                            "Provide the result enclosed in triple backticks with 'json' "
+                            "on the first line. Don't put control characters in the wrong "
+                            "place or the JSON will be invalid."
+                        ),
+                    }
+                    messages.append(msg)
+                elif dynamic_schema and is_django_model(dynamic_schema):
+                    # Handle dynamic Django model
+                    schema = django_model_to_json_schema(dynamic_schema)
+                    json_schema = json.dumps(schema, indent=2)
+                    msg = {
+                        "role": "user",
+                        "content": (
+                            "Format your response according to this Django model JSON schema:\n"
+                            f"```json\n{json_schema}\n```\n\n"
+                            "Provide the result enclosed in triple backticks with 'json' "
+                            "on the first line. Don't put control characters in the wrong "
+                            "place or the JSON will be invalid."
+                        ),
+                    }
+                    messages.append(msg)
+                # Original schema instructions below
+                elif (
                     return_type
                     and inspect.isclass(return_type)
                     and issubclass(return_type, BaseModel)
@@ -854,6 +934,21 @@ class Promptic:
                         "role": "user",
                         "content": (
                             "Format your response according to this JSON schema:\n"
+                            f"```json\n{json_schema}\n```\n\n"
+                            "Provide the result enclosed in triple backticks with 'json' "
+                            "on the first line. Don't put control characters in the wrong "
+                            "place or the JSON will be invalid."
+                        ),
+                    }
+                    messages.append(msg)
+                elif return_type and is_django_model(return_type):
+                    # Handle Django model return type
+                    schema = django_model_to_json_schema(return_type)
+                    json_schema = json.dumps(schema, indent=2)
+                    msg = {
+                        "role": "user",
+                        "content": (
+                            "Format your response according to this Django model JSON schema:\n"
                             f"```json\n{json_schema}\n```\n\n"
                             "Provide the result enclosed in triple backticks with 'json' "
                             "on the first line. Don't put control characters in the wrong "
@@ -1127,10 +1222,13 @@ class Promptic:
             # Always add dynamic schema support
             async_wrapper._dynamic_schema = None
             
-            def setSchema(schema_model: type[BaseModel]):
-                """Set the dynamic Pydantic schema for this function"""
-                if not (inspect.isclass(schema_model) and issubclass(schema_model, BaseModel)):
-                    raise ValueError("schema_model must be a Pydantic BaseModel class")
+            def setSchema(schema_model):
+                """Set the dynamic Pydantic or Django model schema for this function"""
+                if not (
+                    (inspect.isclass(schema_model) and issubclass(schema_model, BaseModel))
+                    or is_django_model(schema_model)
+                ):
+                    raise ValueError("schema_model must be a Pydantic BaseModel or Django Model class")
                 async_wrapper._dynamic_schema = schema_model
             
             async_wrapper.setSchema = setSchema
@@ -1240,11 +1338,46 @@ class Promptic:
 
                 # Check if the function has a return type hint of a Pydantic model
                 return_type = func.__annotations__.get("return")
+                
+                # Check for dynamic schema first (takes priority)
+                dynamic_schema = getattr(async_wrapper if 'async_wrapper' in locals() else wrapper, '_dynamic_schema', None)
 
                 self.logger.debug(f"{return_type = }")
+                self.logger.debug(f"{dynamic_schema = }")
 
                 # Add schema instructions before any LLM call if return type requires it
-                if (
+                # Dynamic schema takes priority over return type annotation
+                if dynamic_schema and inspect.isclass(dynamic_schema) and issubclass(dynamic_schema, BaseModel):
+                    schema = dynamic_schema.model_json_schema()
+                    json_schema = json.dumps(schema, indent=2)
+                    msg = {
+                        "role": "user",
+                        "content": (
+                            "Format your response according to this JSON schema:\n"
+                            f"```json\n{json_schema}\n```\n\n"
+                            "Provide the result enclosed in triple backticks with 'json' "
+                            "on the first line. Don't put control characters in the wrong "
+                            "place or the JSON will be invalid."
+                        ),
+                    }
+                    messages.append(msg)
+                elif dynamic_schema and is_django_model(dynamic_schema):
+                    # Handle dynamic Django model
+                    schema = django_model_to_json_schema(dynamic_schema)
+                    json_schema = json.dumps(schema, indent=2)
+                    msg = {
+                        "role": "user",
+                        "content": (
+                            "Format your response according to this Django model JSON schema:\n"
+                            f"```json\n{json_schema}\n```\n\n"
+                            "Provide the result enclosed in triple backticks with 'json' "
+                            "on the first line. Don't put control characters in the wrong "
+                            "place or the JSON will be invalid."
+                        ),
+                    }
+                    messages.append(msg)
+                # Original schema instructions below
+                elif (
                     return_type
                     and inspect.isclass(return_type)
                     and issubclass(return_type, BaseModel)
@@ -1255,6 +1388,21 @@ class Promptic:
                         "role": "user",
                         "content": (
                             "Format your response according to this JSON schema:\n"
+                            f"```json\n{json_schema}\n```\n\n"
+                            "Provide the result enclosed in triple backticks with 'json' "
+                            "on the first line. Don't put control characters in the wrong "
+                            "place or the JSON will be invalid."
+                        ),
+                    }
+                    messages.append(msg)
+                elif return_type and is_django_model(return_type):
+                    # Handle Django model return type
+                    schema = django_model_to_json_schema(return_type)
+                    json_schema = json.dumps(schema, indent=2)
+                    msg = {
+                        "role": "user",
+                        "content": (
+                            "Format your response according to this Django model JSON schema:\n"
                             f"```json\n{json_schema}\n```\n\n"
                             "Provide the result enclosed in triple backticks with 'json' "
                             "on the first line. Don't put control characters in the wrong "
@@ -1489,10 +1637,13 @@ class Promptic:
             # Always add dynamic schema support
             wrapper._dynamic_schema = None
             
-            def setSchema(schema_model: type[BaseModel]):
-                """Set the dynamic Pydantic schema for this function"""
-                if not (inspect.isclass(schema_model) and issubclass(schema_model, BaseModel)):
-                    raise ValueError("schema_model must be a Pydantic BaseModel class")
+            def setSchema(schema_model):
+                """Set the dynamic Pydantic or Django model schema for this function"""
+                if not (
+                    (inspect.isclass(schema_model) and issubclass(schema_model, BaseModel))
+                    or is_django_model(schema_model)
+                ):
+                    raise ValueError("schema_model must be a Pydantic BaseModel or Django Model class")
                 wrapper._dynamic_schema = schema_model
             
             wrapper.setSchema = setSchema
