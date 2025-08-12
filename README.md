@@ -441,6 +441,94 @@ print(scheduler(cmd))
 
 ```
 
+### Extended Model Support: Django and EasyModel
+
+Beyond Pydantic models, async-promptic now supports Django models and EasyModel classes as output schemas, providing seamless integration with popular ORMs.
+
+#### Django Model Support
+
+You can use Django models as return type annotations, and the LLM will return properly instantiated Django model instances (unsaved):
+
+```py
+# examples/django_models.py
+
+from django.db import models
+from async_promptic import llm
+
+class Product(models.Model):
+    name = models.CharField(max_length=200)
+    price = models.DecimalField(max_digits=10, decimal_places=2)
+    in_stock = models.BooleanField(default=True)
+
+@llm
+def create_product(product_type: str) -> Product:
+    """Create a {product_type} product with realistic details"""
+
+# Returns an unsaved Django model instance
+laptop = create_product("laptop computer")
+print(f"{laptop.name}: ${laptop.price}")
+# laptop.save()  # Save to database if needed
+```
+
+#### EasyModel Support
+
+[EasyModel](https://github.com/puntorigen/easy-model) classes (which extend SQLModel/Pydantic) work seamlessly:
+
+```py
+# examples/easymodel_example.py
+
+from async_easy_model import EasyModel, Field
+from async_promptic import llm
+
+class Customer(EasyModel, table=True):
+    # EasyModel provides id, created_at, updated_at automatically
+    username: str = Field(unique=True)
+    email: str
+    age: int
+
+@llm
+async def generate_customer(location: str) -> Customer:
+    """Generate a customer from {location} with realistic details"""
+
+customer = await generate_customer("Silicon Valley")
+print(f"{customer.username}: {customer.email}")
+# await customer.save()  # Persist to database if needed
+```
+
+#### Dynamic Schema Switching
+
+The `.setSchema()` method works with all supported model types:
+
+```py
+@llm
+def analyze_data(data: str):
+    """Analyze and structure: {data}"""
+
+# Use with Django models
+analyze_data.setSchema(Product)
+product = analyze_data("Gaming laptop, $1500, in stock")
+
+# Use with EasyModel
+analyze_data.setSchema(Customer) 
+customer = analyze_data("John Doe, john@example.com, 30 years old")
+
+# Use with Pydantic
+from pydantic import BaseModel
+class SimpleModel(BaseModel):
+    name: str
+    value: int
+
+analyze_data.setSchema(SimpleModel)
+result = analyze_data("Test item with value 42")
+```
+
+**Key Features:**
+- **Django Models**: Automatic field type detection, relationship handling, proper validation
+- **EasyModel**: Full Pydantic compatibility plus ORM features, automatic timestamp fields
+- **Unsaved Instances**: Model instances are created but not auto-saved to the database
+- **Type Safety**: Full type hints and IDE support for all model types
+- **Validation**: Automatic validation using each framework's validation rules
+
 ### Streaming
 
 The streaming feature allows real-time response generation, useful for long-form content or interactive applications:
