@@ -6,7 +6,10 @@ for LLM-decorated functions, similar to Pydantic model support.
 """
 
 import json
-from typing import Any, Dict, Type, Optional
+from typing import Any, Dict, Type, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from django.db import models as django_models
 
 # Try to import Django, but don't fail if it's not installed
 try:
@@ -107,7 +110,7 @@ def django_field_to_json_type(field) -> Dict[str, Any]:
     return schema
 
 
-def django_model_to_json_schema(model_class: Type[models.Model]) -> Dict[str, Any]:
+def django_model_to_json_schema(model_class: Type["django_models.Model"]) -> Dict[str, Any]:
     """Convert a Django model to a JSON schema."""
     if not DJANGO_AVAILABLE:
         raise ImportError("Django is not installed")
@@ -149,7 +152,7 @@ def django_model_to_json_schema(model_class: Type[models.Model]) -> Dict[str, An
     return schema
 
 
-def create_django_model_instance(model_class: Type[models.Model], data: Dict[str, Any]) -> models.Model:
+def create_django_model_instance(model_class: Type["django_models.Model"], data: Dict[str, Any]) -> "django_models.Model":
     """
     Create a Django model instance from parsed JSON data.
     
@@ -188,7 +191,7 @@ def create_django_model_instance(model_class: Type[models.Model], data: Dict[str
     return instance
 
 
-def get_django_model_instructions(model_class: Type[models.Model]) -> str:
+def get_django_model_instructions(model_class: Type["django_models.Model"]) -> str:
     """
     Generate instructions for the LLM about how to format the Django model response.
     """

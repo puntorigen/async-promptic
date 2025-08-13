@@ -33,7 +33,7 @@ from .django_support import (
     DJANGO_AVAILABLE
 )
 
-__version__ = "5.5.3"
+__version__ = "5.5.4"
 
 def with_fallback(
     models: Optional[List[str]] = None,
